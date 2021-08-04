@@ -13,6 +13,9 @@
 //! load-balancing node or equivalent, and that it is aware of nodes are
 //! available or unavailable. Additionally, it should be able to determine the
 //! weight of each node.
+//!
+//! The entry point of this crate is [`NodeSelection`]. Examples of construction
+//! and usage are included in its documentation.
 
 // Deny unsafe code, but allow unsafe code in tests.
 #![cfg_attr(not(test), forbid(unsafe_code))]
