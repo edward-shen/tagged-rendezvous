@@ -1,9 +1,22 @@
-# Tagged Rendezvous &emsp; [![unsafe forbidden][unsafe-svg]][unsafe-url] [![codecov][cov-svg]][cov-url]
+# Tagged Rendezvous
+
+[![unsafe forbidden][unsafe-svg]][unsafe-url] [![codecov][cov-svg]][cov-url] [![docs.rs][docs-svg]][docs-url]
 
 [unsafe-svg]: https://img.shields.io/badge/unsafe-forbidden-success.svg
-[unsafe-url]: https://github.com/rust-secure-code/safety-dance/
+[unsafe-url]: https://github.com/rust-secure-code/safety-dance
 [cov-svg]: https://codecov.io/gh/edward-shen/tagged-rendezvous/branch/master/graph/badge.svg?token=GI53X8LB0R
 [cov-url]: https://codecov.io/gh/edward-shen/tagged-rendezvous
+[docs-svg]: https://img.shields.io/docsrs/tagged-rendezvous
+[docs-url]: https://docs.rs/tagged-rendezvous
+
+`tagged-rendezvous` is a toy crate for implementing [rendezvous hashing] with
+the ability to exclude certain nodes based on a generic discriminant. This
+crate utilizes the algorithm described in
+[Schindelhauer and Schomaker "Weighted Distributed Hash Tables"][paper] to
+provide perfect stability and weight precision in the presence of mutations.
+
+[rendezvous hashing]: https://en.wikipedia.org/wiki/Rendezvous_hashing
+[paper]: https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.414.9353
 
 ## License
 
