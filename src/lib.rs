@@ -21,6 +21,7 @@
 // Deny unsafe code, but allow unsafe code in tests.
 #![cfg_attr(not(test), forbid(unsafe_code))]
 #![warn(
+    clippy::cargo,
     clippy::pedantic,
     clippy::nursery,
     clippy::missing_docs_in_private_items

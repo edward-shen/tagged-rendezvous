@@ -1,9 +1,13 @@
 [package]
 name = "tagged-rendezvous"
+description = "Rendezvous hashing with support for tag-based exclusions"
 version = "0.1.0"
 authors = ["Edward Shen <code@eddie.sh>"]
 license = "MIT OR Apache-2.0"
 edition = "2018"
+repository = "https://github.com/edward-shen/tagged-rendezvous"
+keywords = ["tagged", "rendezvous", "node", "selection", "balancer"]
+categories = ["concurrency", "data-structures"]
 include = ["src"]
 
 [features]
