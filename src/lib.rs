@@ -9,6 +9,7 @@
 )]
 #![deny(missing_docs)]
 
+use dashmap::mapref::one::RefMut;
 // Re-alias the rayon crate, to allow features to be the name of the crate
 #[cfg(feature = "rayon")]
 use rayon_crate as rayon;
@@ -25,8 +26,8 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(feature = "rayon")]
 use rayon::iter::{FromParallelIterator, IntoParallelIterator, ParallelExtend};
 
-use dashmap::setref::multiple::RefMulti;
-use dashmap::DashSet;
+use dashmap::mapref::multiple::RefMulti;
+use dashmap::{DashMap, DashSet};
 use murmur3::murmur3_x64_128;
 
 // Re-export the dashmap crate so users don't need to manually import it
@@ -52,8 +53,8 @@ pub use dashmap;
 /// of tags.
 ///
 /// This implementation attempts to be performant and concurrent as possible,
-/// using a [`DashSet`]s to provide concurrent access and `rayon` to provide
-/// parallel lookup, if the feature is enabled.
+/// using a [`DashMap`] and [`DashSet`]s to provide concurrent access and
+/// `rayon` to provide parallel lookup, if the feature is enabled.
 ///
 /// # Excluding tags
 ///
@@ -100,43 +101,117 @@ pub use dashmap;
 ///
 /// let selector = NodeSelection::new();
 ///
+/// // Add a node with a weight of 1
 /// let node_1 = Node::<(), _>::new(NonZeroUsize::new(1)?, ());
 /// selector.add_node(node_1.clone());
 ///
-/// // lookups will always return the first node, since it's the only one that
-/// // exists
-///
+/// // Lookups will always return the first node, since it's the only one.
 /// let looked_up_node = selector.get_node(b"hello world")?;
-/// assert_eq!(looked_up_node.key(), &node_1);
+/// assert_eq!(looked_up_node.value(), &node_1);
+/// // Drop the reference ASAP, see `get_node` docs for more info.
+/// std::mem::drop(looked_up_node);
 ///
-/// // add a node with a weight of 2
-/// selector.add_node(Node::<(), _>::new(NonZeroUsize::new(2)?, ()));
+/// // Add a node with a weight of 2
+/// let node_2 = Node::<(), _>::new(NonZeroUsize::new(2)?, ());
+/// selector.add_node(node_2.clone());
 ///
+/// // Any caches should be invalidated now, since we changed the state.
 /// // Now there's a 33% chance of selecting the first node, and a 67% chance of
 /// // selecting the second node.
 ///
+/// // Do something with the node...
 ///
+/// // Now remove the first node
+/// selector.remove_node(node_1.id());
+///
+/// // Any caches should be invalidated now, since we changed the state.
+/// // Lookups will now always return the second node, since it's the only one.
+///
+/// let looked_up_node = selector.get_node(b"hello world")?;
+/// assert_eq!(looked_up_node.value(), &node_2);
 /// # None
 /// # }
 /// ```
 ///
-/// Modifying a weight is currently isn't ergonomic, as the underlying set
-/// implementation doesn't provide a mutable reference entry.
+/// Modifying a weight is pretty ergonomic, but remember that caches should be
+/// invalidated after modifying the weights.
 ///
 /// ```
+/// # use weighted_node_selection::*;
+/// # fn main() -> () {
+/// # example();
+/// # }
+/// #
+/// # fn example() -> Option<()> {
+/// use std::num::NonZeroUsize;
+///
+/// let selector = NodeSelection::new();
+///
+/// // Add a node with a weight of 1
+/// let node_1 = Node::<(), _>::new(NonZeroUsize::new(1)?, ());
+/// selector.add_node(node_1.clone());
+///
+/// // Add a node with a weight of 2
+/// let node_2 = Node::<(), _>::new(NonZeroUsize::new(2)?, ());
+/// selector.add_node(node_2.clone());
+///
+/// // Now there's a 33% chance of selecting the first node, and a 67% chance of
+/// // selecting the second node. Lets modify the weight so there's an equal
+/// // chance of selecting either node.
+///
+/// selector.get_node_mut(node_1.id())?.set_weight(NonZeroUsize::new(1)?);
+///
+/// // Any caches should be invalidated now.
+/// # None
+/// # }
 /// ```
 ///
 /// If exclusion tags are used, then excluded nodes do not contribute to the
 /// sum weights of nodes.
 ///
 /// ```
+/// # use weighted_node_selection::*;
+/// # fn main() -> () {
+/// # example();
+/// # }
+/// #
+/// # fn example() -> Option<()> {
+/// use std::num::NonZeroUsize;
+/// use std::iter::FromIterator;
+///
+/// use dashmap::DashSet;
+///
+/// let selector = NodeSelection::new();
+///
+/// #[derive(Clone, PartialEq, Eq, Hash)]
+/// enum ExclusionTag {
+///    Foo,
+/// }
+///
+/// // Add a 3 nodes, one with an exclusion tag.
+/// let exclusions = DashSet::from_iter([ExclusionTag::Foo]);
+/// let node_1 = Node::new(NonZeroUsize::new(1)?, ());
+/// selector.add_node(node_1.clone());
+/// let node_2 = Node::with_exclusions(NonZeroUsize::new(1)?, (), exclusions.clone());
+/// selector.add_node(node_2.clone());
+/// let node_3 = Node::new(NonZeroUsize::new(1)?, ());
+/// selector.add_node(node_3.clone());
+///
+/// // There's a 33% chance of selecting any node, if no tags are provided.
+/// selector.get_node(b"hello world")?;
+///
+/// // There's a equal chance of getting node 1 or node 3 since node 2 is
+/// // excluded.
+/// selector.get_node_with_exclusions(b"hello world", &exclusions)?;
+/// # None
+/// # }
 /// ```
 ///
 /// [paper]: https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.414.9353
 #[derive(Clone, Debug)]
 pub struct NodeSelection<ExclusionTags: Hash + Eq, Metadata> {
     /// The list of nodes to select from.
-    nodes: DashSet<Node<ExclusionTags, Metadata>>,
+    nodes: DashMap<NodeId, Node<ExclusionTags, Metadata>>,
 }
 
 /// A duplicate id was provided. This contains the duplicated ID that was
@@ -169,13 +244,19 @@ where
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            nodes: DashSet::with_capacity(capacity),
+            nodes: DashMap::with_capacity(capacity),
         }
     }
 
     /// Adds a new node to the selection. If lookups are cached, then callers
     /// must invalidate the cache after adding a node. Otherwise, it is possible
     /// to have incorrectly distributed selections.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding any sort of reference
+    /// into the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
     ///
     /// # Panics
     ///
@@ -185,7 +266,7 @@ where
     #[inline]
     pub fn add_node(&self, node: Node<ExclusionTags, Metadata>) {
         let id = node.node_id;
-        if !self.nodes.insert(node) {
+        if self.nodes.insert(id, node).is_some() {
             panic!("Node with duplicate id added: {}", id);
         }
     }
@@ -193,6 +274,12 @@ where
     /// Tries to add the node to the selection. If lookups are cached, then
     /// callers must invalidate the cache after adding a node. Otherwise, it is
     /// possible to have incorrectly distributed selections.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding any sort of reference
+    /// into the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
     ///
     /// # Errors
     ///
@@ -203,10 +290,10 @@ where
         &self,
         node: Node<ExclusionTags, Metadata>,
     ) -> Result<(), DuplicateIdError> {
-        if self.nodes.contains(&node) {
+        if self.nodes.contains_key(&node.id()) {
             Err(DuplicateIdError(node.node_id))
         } else {
-            self.nodes.insert(node);
+            self.nodes.insert(node.id(), node);
             Ok(())
         }
     }
@@ -215,21 +302,33 @@ where
     /// exclusions. This lookup is performed in serial. Consider
     /// [`par_get_node`](#par_get_node) that uses rayon to parallelize the
     /// lookup.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
     #[inline]
     #[must_use]
-    pub fn get_node(&self, item: &[u8]) -> Option<RefMulti<Node<ExclusionTags, Metadata>>> {
+    pub fn get_node(&self, item: &[u8]) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
         self.get_node_internal(item, None)
     }
 
     /// Like [`get_node`](#get_node), but allows the caller to provide a list of
     /// tags, which nodes that exclude those tags will be skipped.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
     #[inline]
     #[must_use]
     pub fn get_node_with_exclusions(
         &self,
         item: &[u8],
         tags: &DashSet<ExclusionTags>,
-    ) -> Option<RefMulti<Node<ExclusionTags, Metadata>>> {
+    ) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
         self.get_node_internal(item, Some(tags))
     }
 
@@ -238,15 +337,21 @@ where
     /// nodes, and `n` is the number of tags given. As a result, callers should
     /// generally use a small number of tags, either on node restrictions or on
     /// the provided tags for best performance.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
     fn get_node_internal(
         &self,
         item: &[u8],
         tags: Option<&DashSet<ExclusionTags>>,
-    ) -> Option<RefMulti<Node<ExclusionTags, Metadata>>> {
+    ) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
         self.nodes
             .iter()
-            .filter(|node| {
-                !node.exclusions.iter().any(|exclusions| {
+            .filter(|entry| {
+                !entry.value().exclusions.iter().any(|exclusions| {
                     tags.as_ref()
                         .map(|set| set.contains(&exclusions))
                         .unwrap_or_default()
@@ -259,23 +364,52 @@ where
             })
     }
 
+    /// Returns a mutable reference to the node given some ID. This is useful
+    /// for modifying the weight of a node. If lookups are cached, then callers
+    /// must invalidate the cache after adding a node. Otherwise, it is possible
+    /// to have incorrectly distributed selections.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding any sort of reference
+    /// into the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
+    #[inline]
+    #[must_use]
+    pub fn get_node_mut(
+        &self,
+        id: NodeId,
+    ) -> Option<RefMut<NodeId, Node<ExclusionTags, Metadata>>> {
+        self.nodes.get_mut(&id)
+    }
+
     /// Removes a node, returning the node if it existed. If lookups are cached,
     /// then callers must invalidate the cache after successfully removing a
     /// node. Otherwise, it is possible to have incorrectly distributed
     /// selections.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding any sort of reference
+    /// into the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
     #[inline]
-    pub fn remove_node(
-        &self,
-        node: &Node<ExclusionTags, Metadata>,
-    ) -> Option<Node<ExclusionTags, Metadata>> {
-        self.nodes.remove(node)
+    #[must_use]
+    pub fn remove_node(&self, id: NodeId) -> Option<Node<ExclusionTags, Metadata>> {
+        self.nodes.remove(&id).map(|(_id, node)| node)
     }
 
     /// Returns if the node is selectable from this selector.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
     #[inline]
     #[must_use]
-    pub fn contains(&self, node: &Node<ExclusionTags, Metadata>) -> bool {
-        self.nodes.contains(node)
+    pub fn contains(&self, id: NodeId) -> bool {
+        self.nodes.contains_key(&id)
     }
 }
 
@@ -319,31 +453,31 @@ where
     #[inline]
     fn default() -> Self {
         Self {
-            nodes: DashSet::new(),
+            nodes: DashMap::new(),
         }
     }
 }
 
-impl<ExclusionTags, Metadata> Extend<Node<ExclusionTags, Metadata>>
+impl<ExclusionTags, Metadata> Extend<(NodeId, Node<ExclusionTags, Metadata>)>
     for NodeSelection<ExclusionTags, Metadata>
 where
     ExclusionTags: Hash + Eq,
 {
     #[inline]
-    fn extend<T: IntoIterator<Item = Node<ExclusionTags, Metadata>>>(&mut self, iter: T) {
+    fn extend<T: IntoIterator<Item = (NodeId, Node<ExclusionTags, Metadata>)>>(&mut self, iter: T) {
         self.nodes.extend(iter);
     }
 }
 
-impl<ExclusionTags, Metadata> FromIterator<Node<ExclusionTags, Metadata>>
+impl<ExclusionTags, Metadata> FromIterator<(NodeId, Node<ExclusionTags, Metadata>)>
     for NodeSelection<ExclusionTags, Metadata>
 where
     ExclusionTags: Hash + Eq,
 {
     #[inline]
-    fn from_iter<T: IntoIterator<Item = Node<ExclusionTags, Metadata>>>(iter: T) -> Self {
+    fn from_iter<T: IntoIterator<Item = (NodeId, Node<ExclusionTags, Metadata>)>>(iter: T) -> Self {
         Self {
-            nodes: DashSet::from_iter(iter),
+            nodes: DashMap::from_iter(iter),
         }
     }
 }
@@ -370,8 +504,8 @@ impl<ExclusionTags, Metadata> IntoIterator for NodeSelection<ExclusionTags, Meta
 where
     ExclusionTags: Hash + Eq,
 {
-    type Item = Node<ExclusionTags, Metadata>;
-    type IntoIter = <DashSet<Self::Item> as IntoIterator>::IntoIter;
+    type Item = (NodeId, Node<ExclusionTags, Metadata>);
+    type IntoIter = <DashMap<NodeId, Node<ExclusionTags, Metadata>> as IntoIterator>::IntoIter;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -755,7 +889,7 @@ mod node_selection_no_exclusions {
         for _ in 0..600 {
             let node_selected = node_selection.get_node(&(rand::random::<f64>()).to_le_bytes());
             if let Some(node) = node_selected {
-                let node = nodes.get_mut(node.key()).unwrap();
+                let node = nodes.get_mut(node.value()).unwrap();
                 *node += 1;
             }
         }
@@ -790,7 +924,7 @@ mod node_selection_no_exclusions {
         for _ in 0..600 {
             let node_selected = node_selection.get_node(&(rand::random::<f64>()).to_le_bytes());
             if let Some(node) = node_selected {
-                let node = nodes.get_mut(node.key()).unwrap();
+                let node = nodes.get_mut(node.value()).unwrap();
                 *node += 1;
             }
         }
@@ -860,7 +994,7 @@ mod node_selection_exclusions {
             let node_selected = node_selection
                 .get_node_with_exclusions(&(rand::random::<f64>()).to_le_bytes(), &exclusions);
             if let Some(node) = node_selected {
-                let node = nodes.get_mut(node.key()).unwrap();
+                let node = nodes.get_mut(node.value()).unwrap();
                 *node += 1;
             }
         }
@@ -922,7 +1056,7 @@ mod node_selection_exclusions {
             let node_selected = node_selection
                 .get_node_with_exclusions(&(rand::random::<f64>()).to_le_bytes(), &exclusions);
             if let Some(node) = node_selected {
-                let node = nodes.get_mut(node.key()).unwrap();
+                let node = nodes.get_mut(node.value()).unwrap();
                 *node += 1;
             }
         }
