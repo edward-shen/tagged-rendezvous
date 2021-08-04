@@ -15,8 +15,23 @@ crate utilizes the algorithm described in
 [Schindelhauer and Schomaker "Weighted Distributed Hash Tables"][paper] to
 provide perfect stability and weight precision in the presence of mutations.
 
+The intended use case of this crate is to provide an ergonomic way to
+load-balance to potentially weighted nodes for some arbitrary input, while
+allowing large networks to respect [geopolitical issues] that often occur with
+global networks. In other words, it allows for nodes to provide a discriminant
+to exclude themselves from being selected given the need to load balance some
+content that may be ethically, morally, or legally impermissible.
+
+This is useful in multiple contexts. For example, a basic CDN architecture may
+use this to distribute multiple nodes across multiple countries and ensure that
+some content will not appear in nodes where the content is considered illegal.
+Another example would be in scenarios of volunteer nodes for some CDN to support
+some network as a whole but refuse to serve certain content that is illegal in
+their country or content they morally object to.
+
 [rendezvous hashing]: https://en.wikipedia.org/wiki/Rendezvous_hashing
 [paper]: https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.414.9353
+[geopolitical issues]: https://en.wikipedia.org/wiki/Layer_8
 
 ## License
 
