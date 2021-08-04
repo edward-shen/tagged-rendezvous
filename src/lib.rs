@@ -103,17 +103,17 @@ pub use dashmap;
 ///
 /// // Add a node with a weight of 1
 /// let node_1 = Node::<(), _>::new(NonZeroUsize::new(1)?, ());
-/// selector.add_node(node_1.clone());
+/// selector.add(node_1.clone());
 ///
 /// // Lookups will always return the first node, since it's the only one.
-/// let looked_up_node = selector.get_node(b"hello world")?;
+/// let looked_up_node = selector.get(b"hello world")?;
 /// assert_eq!(looked_up_node.value(), &node_1);
 /// // Drop the reference ASAP, see `get_node` docs for more info.
 /// std::mem::drop(looked_up_node);
 ///
 /// // Add a node with a weight of 2
 /// let node_2 = Node::<(), _>::new(NonZeroUsize::new(2)?, ());
-/// selector.add_node(node_2.clone());
+/// selector.add(node_2.clone());
 ///
 /// // Any caches should be invalidated now, since we changed the state.
 /// // Now there's a 33% chance of selecting the first node, and a 67% chance of
@@ -122,12 +122,12 @@ pub use dashmap;
 /// // Do something with the node...
 ///
 /// // Now remove the first node
-/// selector.remove_node(node_1.id());
+/// selector.remove(node_1.id());
 ///
 /// // Any caches should be invalidated now, since we changed the state.
 /// // Lookups will now always return the second node, since it's the only one.
 ///
-/// let looked_up_node = selector.get_node(b"hello world")?;
+/// let looked_up_node = selector.get(b"hello world")?;
 /// assert_eq!(looked_up_node.value(), &node_2);
 /// # None
 /// # }
@@ -149,17 +149,17 @@ pub use dashmap;
 ///
 /// // Add a node with a weight of 1
 /// let node_1 = Node::<(), _>::new(NonZeroUsize::new(1)?, ());
-/// selector.add_node(node_1.clone());
+/// selector.add(node_1.clone());
 ///
 /// // Add a node with a weight of 2
 /// let node_2 = Node::<(), _>::new(NonZeroUsize::new(2)?, ());
-/// selector.add_node(node_2.clone());
+/// selector.add(node_2.clone());
 ///
 /// // Now there's a 33% chance of selecting the first node, and a 67% chance of
 /// // selecting the second node. Lets modify the weight so there's an equal
 /// // chance of selecting either node.
 ///
-/// selector.get_node_mut(node_1.id())?.set_weight(NonZeroUsize::new(1)?);
+/// selector.get_mut(node_1.id())?.set_weight(NonZeroUsize::new(1)?);
 ///
 /// // Any caches should be invalidated now.
 /// # None
@@ -191,18 +191,18 @@ pub use dashmap;
 /// // Add a 3 nodes, one with an exclusion tag.
 /// let exclusions = DashSet::from_iter([ExclusionTag::Foo]);
 /// let node_1 = Node::new(NonZeroUsize::new(1)?, ());
-/// selector.add_node(node_1.clone());
+/// selector.add(node_1.clone());
 /// let node_2 = Node::with_exclusions(NonZeroUsize::new(1)?, (), exclusions.clone());
-/// selector.add_node(node_2.clone());
+/// selector.add(node_2.clone());
 /// let node_3 = Node::new(NonZeroUsize::new(1)?, ());
-/// selector.add_node(node_3.clone());
+/// selector.add(node_3.clone());
 ///
 /// // There's a 33% chance of selecting any node, if no tags are provided.
-/// selector.get_node(b"hello world")?;
+/// selector.get(b"hello world")?;
 ///
 /// // There's a equal chance of getting node 1 or node 3 since node 2 is
 /// // excluded.
-/// selector.get_node_with_exclusions(b"hello world", &exclusions)?;
+/// selector.get_with_exclusions(b"hello world", &exclusions)?;
 /// # None
 /// # }
 /// ```
@@ -264,7 +264,7 @@ where
     /// present in the selection. For the non-panicking version of this method,
     /// see [`try_add_node`](#try_add_node).
     #[inline]
-    pub fn add_node(&self, node: Node<ExclusionTags, Metadata>) {
+    pub fn add(&self, node: Node<ExclusionTags, Metadata>) {
         let id = node.node_id;
         if self.nodes.insert(id, node).is_some() {
             panic!("Node with duplicate id added: {}", id);
@@ -286,10 +286,7 @@ where
     /// This method will fail if the node has an id that is already present in
     /// the selection.
     #[inline]
-    pub fn try_add_node(
-        &self,
-        node: Node<ExclusionTags, Metadata>,
-    ) -> Result<(), DuplicateIdError> {
+    pub fn try_add(&self, node: Node<ExclusionTags, Metadata>) -> Result<(), DuplicateIdError> {
         if self.nodes.contains_key(&node.id()) {
             Err(DuplicateIdError(node.node_id))
         } else {
@@ -310,8 +307,8 @@ where
     /// possible, especially in single threaded contexts.
     #[inline]
     #[must_use]
-    pub fn get_node(&self, item: &[u8]) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
-        self.get_node_internal(item, None)
+    pub fn get(&self, item: &[u8]) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+        self.get_internal(item, None)
     }
 
     /// Like [`get_node`](#get_node), but allows the caller to provide a list of
@@ -324,12 +321,12 @@ where
     /// possible, especially in single threaded contexts.
     #[inline]
     #[must_use]
-    pub fn get_node_with_exclusions(
+    pub fn get_with_exclusions(
         &self,
         item: &[u8],
         tags: &DashSet<ExclusionTags>,
     ) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
-        self.get_node_internal(item, Some(tags))
+        self.get_internal(item, Some(tags))
     }
 
     /// Returns a node that is responsible for the provided item. This lookup
@@ -343,7 +340,7 @@ where
     /// This method may deadlock if called when holding a mutable reference into
     /// the map. Callers must ensure that references are dropped as soon as
     /// possible, especially in single threaded contexts.
-    fn get_node_internal(
+    fn get_internal(
         &self,
         item: &[u8],
         tags: Option<&DashSet<ExclusionTags>>,
@@ -376,10 +373,7 @@ where
     /// possible, especially in single threaded contexts.
     #[inline]
     #[must_use]
-    pub fn get_node_mut(
-        &self,
-        id: NodeId,
-    ) -> Option<RefMut<NodeId, Node<ExclusionTags, Metadata>>> {
+    pub fn get_mut(&self, id: NodeId) -> Option<RefMut<NodeId, Node<ExclusionTags, Metadata>>> {
         self.nodes.get_mut(&id)
     }
 
@@ -395,7 +389,7 @@ where
     /// possible, especially in single threaded contexts.
     #[inline]
     #[must_use]
-    pub fn remove_node(&self, id: NodeId) -> Option<Node<ExclusionTags, Metadata>> {
+    pub fn remove(&self, id: NodeId) -> Option<Node<ExclusionTags, Metadata>> {
         self.nodes.remove(&id).map(|(_id, node)| node)
     }
 
@@ -883,11 +877,11 @@ mod node_selection_no_exclusions {
         };
 
         for node in nodes.keys() {
-            node_selection.add_node(node.clone());
+            node_selection.add(node.clone());
         }
 
         for _ in 0..600 {
-            let node_selected = node_selection.get_node(&(rand::random::<f64>()).to_le_bytes());
+            let node_selected = node_selection.get(&(rand::random::<f64>()).to_le_bytes());
             if let Some(node) = node_selected {
                 let node = nodes.get_mut(node.value()).unwrap();
                 *node += 1;
@@ -918,11 +912,11 @@ mod node_selection_no_exclusions {
         };
 
         for node in nodes.keys() {
-            node_selection.add_node(node.clone());
+            node_selection.add(node.clone());
         }
 
         for _ in 0..600 {
-            let node_selected = node_selection.get_node(&(rand::random::<f64>()).to_le_bytes());
+            let node_selected = node_selection.get(&(rand::random::<f64>()).to_le_bytes());
             if let Some(node) = node_selected {
                 let node = nodes.get_mut(node.value()).unwrap();
                 *node += 1;
@@ -987,12 +981,12 @@ mod node_selection_exclusions {
         };
 
         for node in nodes.keys() {
-            node_selection.add_node(node.clone());
+            node_selection.add(node.clone());
         }
 
         for _ in 0..600 {
             let node_selected = node_selection
-                .get_node_with_exclusions(&(rand::random::<f64>()).to_le_bytes(), &exclusions);
+                .get_with_exclusions(&(rand::random::<f64>()).to_le_bytes(), &exclusions);
             if let Some(node) = node_selected {
                 let node = nodes.get_mut(node.value()).unwrap();
                 *node += 1;
@@ -1049,12 +1043,12 @@ mod node_selection_exclusions {
         };
 
         for node in nodes.keys() {
-            node_selection.add_node(node.clone());
+            node_selection.add(node.clone());
         }
 
         for _ in 0..600 {
             let node_selected = node_selection
-                .get_node_with_exclusions(&(rand::random::<f64>()).to_le_bytes(), &exclusions);
+                .get_with_exclusions(&(rand::random::<f64>()).to_le_bytes(), &exclusions);
             if let Some(node) = node_selected {
                 let node = nodes.get_mut(node.value()).unwrap();
                 *node += 1;
