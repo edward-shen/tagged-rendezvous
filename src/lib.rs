@@ -122,7 +122,7 @@ pub use error::*;
 /// immediately reflect the new state.
 ///
 /// ```
-/// # use weighted_node_selection::*;
+/// # use tagged_rendezvous::*;
 /// # fn main() -> () {
 /// # example();
 /// # }
@@ -139,7 +139,7 @@ pub use error::*;
 /// // Lookups will always return the first node, since it's the only one.
 /// let looked_up_node = selector.get(b"hello world")?;
 /// assert_eq!(looked_up_node.value(), &node_1);
-/// // Drop the reference ASAP, see `get_node` docs for more info.
+/// // Drop the reference ASAP, see `get` docs for more info.
 /// std::mem::drop(looked_up_node);
 ///
 /// // Add a node with a weight of 2
@@ -168,7 +168,7 @@ pub use error::*;
 /// invalidated after modifying the weights.
 ///
 /// ```
-/// # use weighted_node_selection::*;
+/// # use tagged_rendezvous::*;
 /// # fn main() -> () {
 /// # example();
 /// # }
@@ -201,7 +201,7 @@ pub use error::*;
 /// sum weights of nodes.
 ///
 /// ```
-/// # use weighted_node_selection::*;
+/// # use tagged_rendezvous::*;
 /// # fn main() -> () {
 /// # example();
 /// # }
@@ -265,7 +265,7 @@ where
         self.get_internal(item, None)
     }
 
-    /// Like [`get_node`](#get_node), but allows the caller to provide a list of
+    /// Like [`get`](#get), but allows the caller to provide a list of
     /// tags, which nodes that exclude those tags will be skipped.
     ///
     /// # Safety
@@ -362,7 +362,7 @@ where
 /// # Examples
 ///
 /// ```
-/// # use weighted_node_selection::*;
+/// # use tagged_rendezvous::*;
 /// # fn main() -> () {
 /// # example();
 /// # }
@@ -427,7 +427,7 @@ where
         self.get_with_exclusions(item, ExclusionTags::default())
     }
 
-    /// Like [`get_node`](#get_node), but allows the caller to provide a list of
+    /// Like [`get`](#get), but allows the caller to provide a list of
     /// tags, which nodes that exclude those tags will be skipped.
     ///
     /// # Safety
@@ -939,7 +939,7 @@ macro_rules! impl_node {
 /// carries no additional metadata.
 ///
 /// ```
-/// # use weighted_node_selection::*;
+/// # use tagged_rendezvous::*;
 /// # fn main() -> () {
 /// # example();
 /// # }
@@ -958,7 +958,7 @@ macro_rules! impl_node {
 /// communicate with the node.
 ///
 /// ```
-/// # use weighted_node_selection::*;
+/// # use tagged_rendezvous::*;
 /// # fn main() -> () {
 /// # example();
 /// # }
@@ -986,7 +986,7 @@ macro_rules! impl_node {
 /// Finally, you can define a type to use a set of exclusions for a node.
 ///
 /// ```
-/// # use weighted_node_selection::*;
+/// # use tagged_rendezvous::*;
 /// # fn main() -> () {
 /// # example();
 /// # }

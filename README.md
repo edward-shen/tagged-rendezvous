@@ -1,5 +1,9 @@
-[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
-<!-- [![crates.io](https://img.shields.io/crates/v/cargo-geiger.svg)](https://crates.io/crates/cargo-geiger) -->
+# Tagged Rendezvous &emsp; [![unsafe forbidden][unsafe-svg]][unsafe-url] [![codecov][cov-svg]][cov-url]
+
+[unsafe-svg]: https://img.shields.io/badge/unsafe-forbidden-success.svg
+[unsafe-url]: https://github.com/rust-secure-code/safety-dance/
+[cov-svg]: https://codecov.io/gh/edward-shen/tagged-rendezvous/branch/master/graph/badge.svg?token=GI53X8LB0R
+[cov-url]: https://codecov.io/gh/edward-shen/tagged-rendezvous
 
 ## License
 

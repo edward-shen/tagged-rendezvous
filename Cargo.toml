@@ -1,5 +1,5 @@
 [package]
-name = "weighted-node-selection"
+name = "tagged-rendezvous"
 version = "0.1.0"
 authors = ["Edward Shen <code@eddie.sh>"]
 license = "MIT OR Apache-2.0"
