@@ -31,12 +31,12 @@
 use rayon_crate as rayon;
 
 use std::cmp::Ordering;
-use std::error::Error;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::iter::FromIterator;
 use std::num::NonZeroUsize;
+use std::ops::BitAnd;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 #[cfg(feature = "rayon")]
@@ -50,8 +50,11 @@ use dashmap::mapref::one::RefMut;
 use dashmap::{DashMap, DashSet};
 use murmur3::murmur3_x64_128;
 
+mod error;
+
 // Re-export the dashmap crate so users don't need to manually import it
 pub use dashmap;
+pub use error::*;
 
 /// Provides a way to consistently select some weighted bucket (or node) given
 /// some value.
@@ -236,134 +239,10 @@ pub struct NodeSelection<ExclusionTags: Hash + Eq, Metadata> {
     nodes: DashMap<NodeId, Node<ExclusionTags, Metadata>>,
 }
 
-/// A duplicate id was provided. This contains the duplicated ID that was
-/// provided.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DuplicateIdError(NodeId);
-
-impl Display for DuplicateIdError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "A duplicate ID {} was provided", self.0)
-    }
-}
-
-impl Error for DuplicateIdError {}
-
 impl<ExclusionTags, Metadata> NodeSelection<ExclusionTags, Metadata>
 where
     ExclusionTags: Hash + Eq,
 {
-    /// Constructs a new empty instance.
-    #[inline]
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Constructs a new `NodeSelection`, ensuring that at least `capacity`
-    /// nodes can be added without re-allocating.
-    #[inline]
-    #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            nodes: DashMap::with_capacity(capacity),
-        }
-    }
-
-    /// Adds a new node to the selection with an opaque ID. If lookups are
-    /// cached, then callers must invalidate the cache after adding a node.
-    /// Otherwise, it is possible to have incorrectly distributed selections.
-    ///
-    /// # Safety
-    ///
-    /// This method may deadlock if called when holding any sort of reference
-    /// into the map. Callers must ensure that references are dropped as soon as
-    /// possible, especially in single threaded contexts.
-    ///
-    /// # Panics
-    ///
-    /// This method will panic if the provided node has an id that is already
-    /// present in the selection. For the non-panicking version of this method,
-    /// see [`try_add_node`](#try_add_node).
-    #[inline]
-    #[must_use]
-    pub fn add(&self, node: Node<ExclusionTags, Metadata>) -> NodeId {
-        let id = NodeId::new_opaque();
-        self.add_with_id(id, node);
-        id
-    }
-
-    /// Adds a new node to the selection with the provided ID. If lookups are
-    /// cached, then callers must invalidate the cache after adding a node.
-    /// Otherwise, it is possible to have incorrectly distributed selections.
-    ///
-    /// # Safety
-    ///
-    /// This method may deadlock if called when holding any sort of reference
-    /// into the map. Callers must ensure that references are dropped as soon as
-    /// possible, especially in single threaded contexts.
-    ///
-    /// # Panics
-    ///
-    /// This method will panic if the provided node has an id that is already
-    /// present in the selection. For the non-panicking version of this method,
-    /// see [`try_add_node`](#try_add_node).
-    #[inline]
-    pub fn add_with_id(&self, id: NodeId, node: Node<ExclusionTags, Metadata>) {
-        if self.nodes.insert(id, node).is_some() {
-            panic!("Node with duplicate id added: {}", id);
-        }
-    }
-
-    /// Tries to add the node to the selection with an opaque ID. If lookups are
-    /// cached, then callers must invalidate the cache after adding a node.
-    /// Otherwise, it is possible to have incorrectly distributed selections.
-    ///
-    /// # Safety
-    ///
-    /// This method may deadlock if called when holding any sort of reference
-    /// into the map. Callers must ensure that references are dropped as soon as
-    /// possible, especially in single threaded contexts.
-    ///
-    /// # Errors
-    ///
-    /// This method will fail if the node has an id that is already present in
-    /// the selection.
-    #[inline]
-    pub fn try_add(&self, node: Node<ExclusionTags, Metadata>) -> Result<NodeId, DuplicateIdError> {
-        let id = NodeId::new_opaque();
-        self.try_add_with_id(id, node)?;
-        Ok(id)
-    }
-
-    /// Tries to add the node to the selection with the provided ID. If lookups
-    /// are cached, then callers must invalidate the cache after adding a node.
-    /// Otherwise, it is possible to have incorrectly distributed selections.
-    ///
-    /// # Safety
-    ///
-    /// This method may deadlock if called when holding any sort of reference
-    /// into the map. Callers must ensure that references are dropped as soon as
-    /// possible, especially in single threaded contexts.
-    ///
-    /// # Errors
-    ///
-    /// This method will fail if the node has an id that is already present in
-    /// the selection.
-    #[inline]
-    pub fn try_add_with_id(
-        &self,
-        id: NodeId,
-        node: Node<ExclusionTags, Metadata>,
-    ) -> Result<(), DuplicateIdError> {
-        if self.nodes.contains_key(&id) {
-            Err(DuplicateIdError(id))
-        } else {
-            self.nodes.insert(id, node);
-            Ok(())
-        }
-    }
-
     /// Finds a node that is responsible for the provided item with no
     /// exclusions. This lookup is performed in serial. Consider
     /// [`par_get_node`](#par_get_node) that uses rayon to parallelize the
@@ -436,51 +315,6 @@ where
                 left.cmp(&right)
             })
     }
-
-    /// Returns a mutable reference to the node given some ID. This is useful
-    /// for modifying the weight of a node. If lookups are cached, then callers
-    /// must invalidate the cache after adding a node. Otherwise, it is possible
-    /// to have incorrectly distributed selections.
-    ///
-    /// # Safety
-    ///
-    /// This method may deadlock if called when holding any sort of reference
-    /// into the map. Callers must ensure that references are dropped as soon as
-    /// possible, especially in single threaded contexts.
-    #[inline]
-    #[must_use]
-    pub fn get_mut(&self, id: NodeId) -> Option<RefMut<NodeId, Node<ExclusionTags, Metadata>>> {
-        self.nodes.get_mut(&id)
-    }
-
-    /// Removes a node, returning the node if it existed. If lookups are cached,
-    /// then callers must invalidate the cache after successfully removing a
-    /// node. Otherwise, it is possible to have incorrectly distributed
-    /// selections.
-    ///
-    /// # Safety
-    ///
-    /// This method may deadlock if called when holding any sort of reference
-    /// into the map. Callers must ensure that references are dropped as soon as
-    /// possible, especially in single threaded contexts.
-    #[inline]
-    #[must_use]
-    pub fn remove(&self, id: NodeId) -> Option<Node<ExclusionTags, Metadata>> {
-        self.nodes.remove(&id).map(|(_id, node)| node)
-    }
-
-    /// Returns if the node is selectable from this selector.
-    ///
-    /// # Safety
-    ///
-    /// This method may deadlock if called when holding a mutable reference into
-    /// the map. Callers must ensure that references are dropped as soon as
-    /// possible, especially in single threaded contexts.
-    #[inline]
-    #[must_use]
-    pub fn contains(&self, id: NodeId) -> bool {
-        self.nodes.contains_key(&id)
-    }
 }
 
 impl<ExclusionTags, Metadata> NodeSelection<ExclusionTags, Metadata>
@@ -514,102 +348,538 @@ where
     }
 }
 
-impl<ExclusionTags, Metadata> Default for NodeSelection<ExclusionTags, Metadata>
+/// Like [`NodeSelection`], but specialized for bitflags.
+///
+/// Note that `ExclusionTags` must also implement [`Default`]. This is not a
+/// problem for raw bitflags, but for types derived from the [`bitflags` crate],
+/// then you will need to implement [`Default`] on the type. This default value
+/// should represent when all flags are disabled.
+///
+/// Performance on lookups are now `O(n)`, where `n` is the number of nodes.
+///
+/// [`bitflags` crate]: https://docs.rs/bitflags/
+#[derive(Clone, Debug)]
+pub struct BitNodeSelection<ExclusionTags: Hash + Eq + BitAnd, Metadata> {
+    /// The list of nodes to select from.
+    nodes: DashMap<NodeId, BitNode<ExclusionTags, Metadata>>,
+}
+
+impl<ExclusionTags, Metadata> BitNodeSelection<ExclusionTags, Metadata>
 where
-    ExclusionTags: Hash + Eq,
+    ExclusionTags: Hash + Eq + BitAnd<Output = ExclusionTags> + Copy + Default,
 {
+    /// Finds a node that is responsible for the provided item with no
+    /// exclusions. This lookup is performed in serial. Consider
+    /// [`par_get_node`](#par_get_node) that uses rayon to parallelize the
+    /// lookup.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
     #[inline]
-    fn default() -> Self {
-        Self {
-            nodes: DashMap::new(),
-        }
+    #[must_use]
+    pub fn get(&self, item: &[u8]) -> Option<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+        self.get_with_exclusions(item, ExclusionTags::default())
+    }
+
+    /// Like [`get_node`](#get_node), but allows the caller to provide a list of
+    /// tags, which nodes that exclude those tags will be skipped.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
+    #[inline]
+    #[must_use]
+    pub fn get_with_exclusions(
+        &self,
+        item: &[u8],
+        tags: ExclusionTags,
+    ) -> Option<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+        self.nodes
+            .iter()
+            .filter(|entry| entry.value().exclusions & tags == ExclusionTags::default())
+            .max_by(|left, right| {
+                // wait for total_cmp to be stabilized. Until then, use the
+                // actual implementation.
+                // https://github.com/rust-lang/rust/issues/72599
+
+                let mut left = left.score(item).to_bits() as i64;
+                let mut right = right.score(item).to_bits() as i64;
+                left ^= (((left >> 63) as u64) >> 1) as i64;
+                right ^= (((right >> 63) as u64) >> 1) as i64;
+
+                left.cmp(&right)
+            })
     }
 }
 
-impl<ExclusionTags, Metadata> Extend<(NodeId, Node<ExclusionTags, Metadata>)>
-    for NodeSelection<ExclusionTags, Metadata>
+impl<ExclusionTags, Metadata> BitNodeSelection<ExclusionTags, Metadata>
 where
-    ExclusionTags: Hash + Eq,
-{
-    #[inline]
-    fn extend<T: IntoIterator<Item = (NodeId, Node<ExclusionTags, Metadata>)>>(&mut self, iter: T) {
-        self.nodes.extend(iter);
-    }
-}
-
-impl<ExclusionTags, Metadata> FromIterator<(NodeId, Node<ExclusionTags, Metadata>)>
-    for NodeSelection<ExclusionTags, Metadata>
-where
-    ExclusionTags: Hash + Eq,
-{
-    #[inline]
-    fn from_iter<T: IntoIterator<Item = (NodeId, Node<ExclusionTags, Metadata>)>>(iter: T) -> Self {
-        Self {
-            nodes: DashMap::from_iter(iter),
-        }
-    }
-}
-
-#[cfg(feature = "rayon")]
-impl<ExclusionTags, Metadata> FromParallelIterator<(NodeId, Node<ExclusionTags, Metadata>)>
-    for NodeSelection<ExclusionTags, Metadata>
-where
-    ExclusionTags: Send + Sync + Hash + Eq,
+    ExclusionTags: Send + Sync + Hash + Eq + BitAnd<Output = ExclusionTags> + Default + Copy,
     Metadata: Send + Sync,
 {
-    #[inline]
-    fn from_par_iter<I>(into_iter: I) -> Self
-    where
-        I: IntoParallelIterator<Item = (NodeId, Node<ExclusionTags, Metadata>)>,
-    {
-        Self {
-            nodes: DashMap::from_par_iter(into_iter),
+    /// Finds a node that is responsible for the provided item, filtering out
+    /// nodes that refuse to accept the provided tags. This lookup is performed
+    /// in parallel. Requires the `rayon` feature.
+    #[cfg(feature = "rayon")]
+    pub fn par_get_node(
+        &self,
+        item: &[u8],
+        tags: ExclusionTags,
+    ) -> Option<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+        self.nodes
+            .par_iter()
+            .filter(|node| node.exclusions & tags == ExclusionTags::default())
+            .max_by(|a, b| {
+                a.score(item)
+                    .partial_cmp(&b.score(item))
+                    .unwrap_or(Ordering::Equal)
+            })
+    }
+}
+
+macro_rules! impl_node_selection {
+    ($struct_name:ident, $node:ident : $($bounds:path)*) => {
+        impl<ExclusionTags, Metadata> $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+        {
+            /// Constructs a new empty instance.
+            #[inline]
+            #[must_use]
+            pub fn new() -> Self {
+                Self::default()
+            }
+
+            /// Constructs a new `$struct_name`, ensuring that at least
+            /// `capacity` nodes can be added without re-allocating.
+            #[inline]
+            #[must_use]
+            pub fn with_capacity(capacity: usize) -> Self {
+                Self {
+                    nodes: DashMap::with_capacity(capacity),
+                }
+            }
+
+            /// Adds a new node to the selection with an opaque ID. If lookups
+            /// are cached, then callers must invalidate the cache after adding
+            /// a node. Otherwise, it is possible to have incorrectly
+            /// distributed selections.
+            ///
+            /// # Safety
+            ///
+            /// This method may deadlock if called when holding any sort of
+            /// reference into the map. Callers must ensure that references are
+            /// dropped as soon as possible, especially in single threaded
+            /// contexts.
+            ///
+            /// # Panics
+            ///
+            /// This method will panic if the provided node has an id that is
+            /// already present in the selection. For the non-panicking version
+            /// of this method, see [`try_add_node`](#try_add_node).
+            #[inline]
+            #[must_use]
+            pub fn add(&self, node: $node<ExclusionTags, Metadata>) -> NodeId {
+                let id = NodeId::new_opaque();
+                self.add_with_id(id, node);
+                id
+            }
+
+            /// Adds a new node to the selection with the provided ID. If
+            /// lookups are cached, then callers must invalidate the cache after
+            /// adding a node. Otherwise, it is possible to have incorrectly
+            /// distributed selections.
+            ///
+            /// # Safety
+            ///
+            /// This method may deadlock if called when holding any sort of
+            /// reference into the map. Callers must ensure that references are
+            /// dropped as soon as possible, especially in single threaded
+            /// contexts.
+            ///
+            /// # Panics
+            ///
+            /// This method will panic if the provided node has an id that is
+            /// already present in the selection. For the non-panicking version
+            /// of this method, see [`try_add_node`](#try_add_node).
+            #[inline]
+            pub fn add_with_id(&self, id: NodeId, node: $node<ExclusionTags, Metadata>) {
+                if self.nodes.insert(id, node).is_some() {
+                    panic!("Node with duplicate id added: {}", id);
+                }
+            }
+
+            /// Tries to add the node to the selection with an opaque ID. If
+            /// lookups are cached, then callers must invalidate the cache after
+            /// adding a node. Otherwise, it is possible to have incorrectly
+            /// distributed selections.
+            ///
+            /// # Safety
+            ///
+            /// This method may deadlock if called when holding any sort of
+            /// reference into the map. Callers must ensure that references are
+            /// dropped as soon as possible, especially in single threaded
+            /// contexts.
+            ///
+            /// # Errors
+            ///
+            /// This method will fail if the node has an id that is already
+            /// present in the selection.
+            #[inline]
+            pub fn try_add(
+                &self,
+                node: $node<ExclusionTags, Metadata>,
+            ) -> Result<NodeId, DuplicateIdError> {
+                let id = NodeId::new_opaque();
+                self.try_add_with_id(id, node)?;
+                Ok(id)
+            }
+
+            /// Tries to add the node to the selection with the provided ID. If
+            /// lookups are cached, then callers must invalidate the cache after
+            /// adding a node. Otherwise, it is possible to have incorrectly
+            /// distributed selections.
+            ///
+            /// # Safety
+            ///
+            /// This method may deadlock if called when holding any sort of
+            /// reference into the map. Callers must ensure that references are
+            /// dropped as soon as possible, especially in single threaded
+            /// contexts.
+            ///
+            /// # Errors
+            ///
+            /// This method will fail if the node has an id that is already
+            /// present in the selection.
+            #[inline]
+            pub fn try_add_with_id(
+                &self,
+                id: NodeId,
+                node: $node<ExclusionTags, Metadata>,
+            ) -> Result<(), DuplicateIdError> {
+                if self.nodes.contains_key(&id) {
+                    Err(DuplicateIdError(id))
+                } else {
+                    self.nodes.insert(id, node);
+                    Ok(())
+                }
+            }
+
+            /// Returns a mutable reference to the node given some ID. This is
+            /// useful for modifying the weight of a node. If lookups are
+            /// cached, then callers must invalidate the cache after adding a
+            /// node. Otherwise, it is possible to have incorrectly distributed
+            /// selections.
+            ///
+            /// # Safety
+            ///
+            /// This method may deadlock if called when holding any sort of
+            /// reference
+            /// into the map. Callers must ensure that references are dropped as
+            /// soon as possible, especially in single threaded contexts.
+            #[inline]
+            #[must_use]
+            pub fn get_mut(
+                &self,
+                id: NodeId,
+            ) -> Option<RefMut<NodeId, $node<ExclusionTags, Metadata>>> {
+                self.nodes.get_mut(&id)
+            }
+
+            /// Removes a node, returning the node if it existed. If lookups are
+            /// cached, then callers must invalidate the cache after
+            /// successfully removing a node. Otherwise, it is possible to have
+            /// incorrectly distributed selections.
+            ///
+            /// # Safety
+            ///
+            /// This method may deadlock if called when holding any sort of
+            /// reference into the map. Callers must ensure that references are
+            /// dropped as soon as possible, especially in single threaded
+            /// contexts.
+            #[inline]
+            #[must_use]
+            pub fn remove(&self, id: NodeId) -> Option<$node<ExclusionTags, Metadata>> {
+                self.nodes.remove(&id).map(|(_id, node)| node)
+            }
+
+            /// Returns if the node is selectable from this selector.
+            ///
+            /// # Safety
+            ///
+            /// This method may deadlock if called when holding a mutable
+            /// reference into the map. Callers must ensure that references are
+            /// dropped as soon as possible, especially in single threaded
+            /// contexts.
+            #[inline]
+            #[must_use]
+            pub fn contains(&self, id: NodeId) -> bool {
+                self.nodes.contains_key(&id)
+            }
         }
-    }
+
+        impl<ExclusionTags, Metadata> Default for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+        {
+            #[inline]
+            fn default() -> Self {
+                Self {
+                    nodes: DashMap::new(),
+                }
+            }
+        }
+
+        impl<ExclusionTags, Metadata> Extend<(NodeId, $node<ExclusionTags, Metadata>)>
+            for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+        {
+            #[inline]
+            fn extend<T: IntoIterator<Item = (NodeId, $node<ExclusionTags, Metadata>)>>(
+                &mut self,
+                iter: T,
+            ) {
+                self.nodes.extend(iter);
+            }
+        }
+
+        impl<ExclusionTags, Metadata> FromIterator<(NodeId, $node<ExclusionTags, Metadata>)>
+            for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+        {
+            #[inline]
+            fn from_iter<T: IntoIterator<Item = (NodeId, $node<ExclusionTags, Metadata>)>>(
+                iter: T,
+            ) -> Self {
+                Self {
+                    nodes: DashMap::from_iter(iter),
+                }
+            }
+        }
+
+        #[cfg(feature = "rayon")]
+        impl<ExclusionTags, Metadata> FromParallelIterator<(NodeId, $node<ExclusionTags, Metadata>)>
+            for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Send + Sync + Hash + Eq + $($bounds)*,
+            Metadata: Send + Sync,
+        {
+            #[inline]
+            fn from_par_iter<I>(into_iter: I) -> Self
+            where
+                I: IntoParallelIterator<Item = (NodeId, $node<ExclusionTags, Metadata>)>,
+            {
+                Self {
+                    nodes: DashMap::from_par_iter(into_iter),
+                }
+            }
+        }
+
+        impl<ExclusionTags, Metadata> IntoIterator for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+        {
+            type Item = (NodeId, $node<ExclusionTags, Metadata>);
+            type IntoIter =
+                <DashMap<NodeId, $node<ExclusionTags, Metadata>> as IntoIterator>::IntoIter;
+
+            #[inline]
+            fn into_iter(self) -> Self::IntoIter {
+                self.nodes.into_iter()
+            }
+        }
+
+        #[cfg(feature = "rayon")]
+        impl<ExclusionTags, Metadata> IntoParallelIterator for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Send + Sync + Hash + Eq + $($bounds)*,
+            Metadata: Send + Sync,
+        {
+            type Item = <Self as IntoIterator>::Item;
+            type Iter =
+                <DashMap<NodeId, $node<ExclusionTags, Metadata>> as IntoParallelIterator>::Iter;
+
+            #[inline]
+            fn into_par_iter(self) -> <Self as IntoParallelIterator>::Iter {
+                self.nodes.into_par_iter()
+            }
+        }
+
+        #[cfg(feature = "rayon")]
+        impl<ExclusionTags, Metadata> ParallelExtend<(NodeId, $node<ExclusionTags, Metadata>)>
+            for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Send + Sync + Hash + Eq + $($bounds)*,
+            Metadata: Send + Sync,
+        {
+            #[inline]
+            fn par_extend<I>(&mut self, extendable: I)
+            where
+                I: IntoParallelIterator<Item = (NodeId, $node<ExclusionTags, Metadata>)>,
+            {
+                self.nodes.par_extend(extendable);
+            }
+        }
+    };
 }
 
-impl<ExclusionTags, Metadata> IntoIterator for NodeSelection<ExclusionTags, Metadata>
-where
-    ExclusionTags: Hash + Eq,
-{
-    type Item = (NodeId, Node<ExclusionTags, Metadata>);
-    type IntoIter = <DashMap<NodeId, Node<ExclusionTags, Metadata>> as IntoIterator>::IntoIter;
+impl_node_selection!(NodeSelection, Node:);
 
-    #[inline]
-    fn into_iter(self) -> Self::IntoIter {
-        self.nodes.into_iter()
-    }
-}
+impl_node_selection!(BitNodeSelection, BitNode: BitAnd);
 
-#[cfg(feature = "rayon")]
-impl<ExclusionTags, Metadata> IntoParallelIterator for NodeSelection<ExclusionTags, Metadata>
-where
-    ExclusionTags: Send + Sync + Hash + Eq,
-    Metadata: Send + Sync,
-{
-    type Item = <Self as IntoIterator>::Item;
-    type Iter = <DashMap<NodeId, Node<ExclusionTags, Metadata>> as IntoParallelIterator>::Iter;
+macro_rules! impl_node {
+    ($struct_name:ident, $excludes_type:ty : $($bounds:path)*) => {
+        impl<ExclusionTags, Metadata> $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+        {
+            /// Constructs a new node with an opaque ID, using the provided
+            /// metadata and exclusions.
+            ///
+            /// `weight` should not exceed 2^52. `weight` is internally casted
+            /// as a [`f64`], and loss of precision may occur if `weight`
+            /// exceeds [`f64`]'s mantissa of 52 bits. This should not be a
+            /// problem for most use cases.
+            #[inline]
+            #[must_use]
+            pub fn with_exclusions(
+                weight: NonZeroUsize,
+                metadata: Metadata,
+                exclusions: $excludes_type,
+            ) -> Self {
+                Self {
+                    seed: rand::random(),
+                    weight,
+                    exclusions,
+                    metadata,
+                }
+            }
 
-    #[inline]
-    fn into_par_iter(self) -> <Self as IntoParallelIterator>::Iter {
-        self.nodes.into_par_iter()
-    }
-}
+            /// Constructs a new node from its components.
+            ///
+            /// `weight` should not exceed 2^52. `weight` is internally casted
+            /// as a [`f64`], and loss of precision may occur if `weight`
+            /// exceeds [`f64`]'s mantissa of 52 bits. This should not be a
+            /// problem for most use cases.
+            #[inline]
+            #[must_use]
+            pub fn from_parts(
+                weight: NonZeroUsize,
+                exclusions: $excludes_type,
+                metadata: Metadata,
+            ) -> Self {
+                Self {
+                    weight,
+                    seed: rand::random(),
+                    exclusions,
+                    metadata,
+                }
+            }
 
-#[cfg(feature = "rayon")]
-impl<ExclusionTags, Metadata> ParallelExtend<(NodeId, Node<ExclusionTags, Metadata>)>
-    for NodeSelection<ExclusionTags, Metadata>
-where
-    ExclusionTags: Send + Sync + Hash + Eq,
-    Metadata: Send + Sync,
-{
-    #[inline]
-    fn par_extend<I>(&mut self, extendable: I)
-    where
-        I: IntoParallelIterator<Item = (NodeId, Node<ExclusionTags, Metadata>)>,
-    {
-        self.nodes.par_extend(extendable);
-    }
+            /// Calculates the score of a node for a given input. This
+            /// implements Murmur3 hash alongside highest random weight hashing,
+            /// also known as Rendezvous hashing.
+            fn score(&self, item: &[u8]) -> f64 {
+                // truncation is intended
+                #[allow(clippy::cast_possible_truncation)]
+                let hash =
+                    Hash64(murmur3_x64_128(&mut Cursor::new(item), self.seed).unwrap() as u64)
+                        .as_normalized_float();
+                let score = 1.0 / -hash.ln();
+                // This is documented in construction of a node
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    self.weight.get() as f64 * score
+                }
+            }
+
+            /// Sets the weight of the node.
+            #[inline]
+            pub fn set_weight(&mut self, weight: NonZeroUsize) {
+                self.weight = weight;
+            }
+
+            /// Fetches the associated data with the node.
+            #[inline]
+            pub fn data(&self) -> &Metadata {
+                &self.metadata
+            }
+        }
+
+        impl<ExclusionTags, Metadata> Hash for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+            Metadata: Hash,
+        {
+            #[inline]
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                self.weight.hash(state);
+                self.seed.hash(state);
+                self.metadata.hash(state);
+            }
+        }
+
+        impl<ExclusionTags, Metadata> PartialEq for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+            Metadata: PartialEq,
+        {
+            #[inline]
+            fn eq(&self, other: &Self) -> bool {
+                self.weight == other.weight
+                    && self.seed == other.seed
+                    && self.metadata == other.metadata
+            }
+        }
+
+        impl<ExclusionTags, Metadata> Eq for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+            Metadata: Eq,
+        {
+        }
+
+        impl<ExclusionTags, Metadata> PartialOrd for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+            Metadata: PartialOrd,
+        {
+            #[inline]
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                match self.metadata.partial_cmp(&other.metadata) {
+                    None | Some(Ordering::Equal) => match self.weight.cmp(&other.weight) {
+                        Ordering::Equal => Some(self.seed.cmp(&other.seed)),
+                        cmp => Some(cmp),
+                    },
+                    cmp => cmp,
+                }
+            }
+        }
+
+        impl<ExclusionTags, Metadata> Ord for $struct_name<ExclusionTags, Metadata>
+        where
+            ExclusionTags: Hash + Eq + $($bounds)*,
+            Metadata: Ord,
+        {
+            #[inline]
+            fn cmp(&self, other: &Self) -> Ordering {
+                match self.metadata.cmp(&other.metadata) {
+                    Ordering::Equal => match self.weight.cmp(&other.weight) {
+                        Ordering::Equal => self.seed.cmp(&other.seed),
+                        cmp => cmp,
+                    },
+                    cmp => cmp,
+                }
+            }
+        }
+    };
 }
 
 /// A representation of logical node in some system.
@@ -744,75 +1014,6 @@ where
             metadata,
         }
     }
-
-    /// Constructs a new node with an opaque ID, using the provided metadata and
-    /// exclusions.
-    ///
-    /// `weight` should not exceed 2^52. `weight` is internally casted as a
-    /// [`f64`], and loss of precision may occur if `weight` exceeds [`f64`]'s
-    /// mantissa of 52 bits.This should not be a problem for most use cases.
-    #[inline]
-    #[must_use]
-    pub fn with_exclusions(
-        weight: NonZeroUsize,
-        metadata: Metadata,
-        exclusions: DashSet<ExclusionTags>,
-    ) -> Self {
-        Self {
-            seed: rand::random(),
-            weight,
-            exclusions,
-            metadata,
-        }
-    }
-
-    /// Constructs a new node from its components.
-    ///
-    /// `weight` should not exceed 2^52. `weight` is internally casted as a
-    /// [`f64`], and loss of precision may occur if `weight` exceeds [`f64`]'s
-    /// mantissa of 52 bits.This should not be a problem for most use cases.
-    #[inline]
-    #[must_use]
-    pub fn from_parts(
-        weight: NonZeroUsize,
-        exclusions: DashSet<ExclusionTags>,
-        metadata: Metadata,
-    ) -> Self {
-        Self {
-            weight,
-            seed: rand::random(),
-            exclusions,
-            metadata,
-        }
-    }
-
-    /// Calculates the score of a node for a given input. This implements
-    /// Murmur3 hash alongside highest random weight hashing, also known as
-    /// Rendezvous hashing.
-    fn score(&self, item: &[u8]) -> f64 {
-        // truncation is intended
-        #[allow(clippy::cast_possible_truncation)]
-        let hash = Hash64(murmur3_x64_128(&mut Cursor::new(item), self.seed).unwrap() as u64)
-            .as_normalized_float();
-        let score = 1.0 / -hash.ln();
-        // This is documented in construction of a node
-        #[allow(clippy::cast_precision_loss)]
-        {
-            self.weight.get() as f64 * score
-        }
-    }
-
-    /// Sets the weight of the node.
-    #[inline]
-    pub fn set_weight(&mut self, weight: NonZeroUsize) {
-        self.weight = weight;
-    }
-
-    /// Fetches the associated data with the node.
-    #[inline]
-    pub fn data(&self) -> &Metadata {
-        &self.metadata
-    }
 }
 
 impl<ExclusionTags, Metadata> Node<ExclusionTags, Metadata>
@@ -833,70 +1034,72 @@ where
     }
 }
 
-impl<ExclusionTags, Metadata> Hash for Node<ExclusionTags, Metadata>
-where
-    ExclusionTags: Hash + Eq,
-    Metadata: Hash,
-{
-    #[inline]
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.weight.hash(state);
-        self.seed.hash(state);
-        self.metadata.hash(state);
-    }
+impl_node!(Node, DashSet<ExclusionTags>: );
+
+/// Like [`Node`], but optimized for bitflags.
+///
+/// Note that `ExclusionTags` must also implement [`Default`]. This is not a
+/// problem for raw bitflags, but for types derived from the [`bitflags` crate],
+/// then you will need to implement [`Default`] on the type. This default value
+/// should represent when all flags are disabled.
+///
+/// [`bitflags` crate]: https://docs.rs/bitflags/
+#[derive(Clone, Debug)]
+pub struct BitNode<ExclusionTags: Hash + Eq + BitAnd, Metadata> {
+    /// The weight of a node. This is a relative value, and is used to determine
+    /// how much traffic a node receives.
+    weight: NonZeroUsize,
+    /// This random seed value is used as a way to differentiate nodes. This is
+    /// used to act as a seed value for the hash function, so that two nodes
+    /// don't have the same score before weights.
+    seed: u32,
+    /// A list of items that a node declares to not accept.
+    exclusions: ExclusionTags,
+    /// Associated data. This is generic, so it can be used for any type,
+    /// including `Option<T>`.
+    metadata: Metadata,
 }
 
-impl<ExclusionTags, Metadata> PartialEq for Node<ExclusionTags, Metadata>
+impl<ExclusionTags, Metadata> BitNode<ExclusionTags, Metadata>
 where
-    ExclusionTags: Hash + Eq,
-    Metadata: PartialEq,
+    ExclusionTags: Hash + Eq + BitAnd + Default,
 {
+    /// Constructs a new node with an opaque ID and no exclusions.
+    ///
+    /// `weight` should not exceed 2^52. `weight` is internally casted as a
+    /// [`f64`], and loss of precision may occur if `weight` exceeds [`f64`]'s
+    /// mantissa of 52 bits. This should not be a problem for most use cases.
     #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.weight == other.weight && self.seed == other.seed && self.metadata == other.metadata
-    }
-}
-
-impl<ExclusionTags, Metadata> Eq for Node<ExclusionTags, Metadata>
-where
-    ExclusionTags: Hash + Eq,
-    Metadata: Eq,
-{
-}
-
-impl<ExclusionTags, Metadata> PartialOrd for Node<ExclusionTags, Metadata>
-where
-    ExclusionTags: Hash + Eq,
-    Metadata: PartialOrd,
-{
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self.metadata.partial_cmp(&other.metadata) {
-            None | Some(Ordering::Equal) => match self.weight.cmp(&other.weight) {
-                Ordering::Equal => Some(self.seed.cmp(&other.seed)),
-                cmp => Some(cmp),
-            },
-            cmp => cmp,
+    #[must_use]
+    pub fn new(weight: NonZeroUsize, metadata: Metadata) -> Self {
+        Self {
+            seed: rand::random(),
+            weight,
+            exclusions: Default::default(),
+            metadata,
         }
     }
 }
 
-impl<ExclusionTags, Metadata> Ord for Node<ExclusionTags, Metadata>
+impl<ExclusionTags, Metadata> BitNode<ExclusionTags, Metadata>
 where
-    ExclusionTags: Hash + Eq,
-    Metadata: Ord,
+    ExclusionTags: Hash + Eq + BitAnd + Default,
+    Metadata: Default,
 {
+    /// Constructs a new node with an opaque ID and no exclusions, using the
+    /// default implementation of `Metadata`.
+    ///
+    /// `weight` should not exceed 2^52. `weight` is internally casted as a
+    /// [`f64`], and loss of precision may occur if `weight` exceeds [`f64`]'s
+    /// mantissa of 52 bits.This should not be a problem for most use cases.
     #[inline]
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.metadata.cmp(&other.metadata) {
-            Ordering::Equal => match self.weight.cmp(&other.weight) {
-                Ordering::Equal => self.seed.cmp(&other.seed),
-                cmp => cmp,
-            },
-            cmp => cmp,
-        }
+    #[must_use]
+    pub fn with_default(weight: NonZeroUsize) -> Self {
+        Self::new(weight, Metadata::default())
     }
 }
+
+impl_node!(BitNode, ExclusionTags: BitAnd);
 
 /// A representation of a 64 bit hash value.
 struct Hash64(u64);
