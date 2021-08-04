@@ -1,14 +1,20 @@
 [package]
 name = "weighted-node-selection"
 version = "0.1.0"
+authors = ["Edward Shen <code@eddie.sh>"]
+license = "MIT OR Apache-2.0"
 edition = "2018"
+include = ["src/lib.rs"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-rayon = ["rayon_crate"]
+rayon = ["rayon_crate", "dashmap/rayon"]
 
 [dependencies]
-dashmap = { version = "4", features = [ "rayon" ] }
+dashmap = "4"
 murmur3 = "0.5"
 rand = "0.8"
-rayon_crate = { package= "rayon", version = "1", optional = true }
+rayon_crate = { package = "rayon", version = "1", optional = true }
+
+[profile.release]
+lto = true
+codegen-units = 1

@@ -1,7 +1,21 @@
+//! This crate is a proof of concept for node selection based on a logarithmic
+//! rendezvous hashing implementation that allows nodes to self-exclude based
+//! on a generic type. While this is still a proof of concept, performance
+//! should be good enough for small to medium-sized implementations.
 //!
+//! Note that this implementation does not include any caching mechanism. This
+//! is intentional, and is done to keep the implementation as simple as
+//! possible. Users of this crate _should_ implement their own caching
+//! mechanism for best performance and evict on mutation, but this is not
+//! necessary, especially in small use cases.
+//!
+//! This implementation assumes that the typical use case is on some
+//! load-balancing node or equivalent, and that it is aware of nodes are
+//! available or unavailable. Additionally, it should be able to determine the
+//! weight of each node.
 
 // Deny unsafe code, but allow unsafe code in tests.
-#![cfg_attr(not(test), deny(unsafe_code))]
+#![cfg_attr(not(test), forbid(unsafe_code))]
 #![warn(
     clippy::pedantic,
     clippy::nursery,
@@ -9,7 +23,6 @@
 )]
 #![deny(missing_docs)]
 
-use dashmap::mapref::one::RefMut;
 // Re-alias the rayon crate, to allow features to be the name of the crate
 #[cfg(feature = "rayon")]
 use rayon_crate as rayon;
@@ -24,9 +37,13 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 #[cfg(feature = "rayon")]
-use rayon::iter::{FromParallelIterator, IntoParallelIterator, ParallelExtend};
+use rayon::iter::{
+    FromParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelExtend,
+    ParallelIterator,
+};
 
 use dashmap::mapref::multiple::RefMulti;
+use dashmap::mapref::one::RefMut;
 use dashmap::{DashMap, DashSet};
 use murmur3::murmur3_x64_128;
 
@@ -54,7 +71,9 @@ pub use dashmap;
 ///
 /// This implementation attempts to be performant and concurrent as possible,
 /// using a [`DashMap`] and [`DashSet`]s to provide concurrent access and
-/// `rayon` to provide parallel lookup, if the feature is enabled.
+/// `rayon` to provide parallel lookup, if the feature is enabled. In single
+/// threaded contexts, care should be used to not deadlock with multiple
+/// references.
 ///
 /// # Excluding tags
 ///
@@ -103,7 +122,7 @@ pub use dashmap;
 ///
 /// // Add a node with a weight of 1
 /// let node_1 = Node::<(), _>::new(NonZeroUsize::new(1)?, ());
-/// selector.add(node_1.clone());
+/// let node_1_id = selector.add(node_1.clone());
 ///
 /// // Lookups will always return the first node, since it's the only one.
 /// let looked_up_node = selector.get(b"hello world")?;
@@ -122,7 +141,7 @@ pub use dashmap;
 /// // Do something with the node...
 ///
 /// // Now remove the first node
-/// selector.remove(node_1.id());
+/// selector.remove(node_1_id);
 ///
 /// // Any caches should be invalidated now, since we changed the state.
 /// // Lookups will now always return the second node, since it's the only one.
@@ -149,7 +168,7 @@ pub use dashmap;
 ///
 /// // Add a node with a weight of 1
 /// let node_1 = Node::<(), _>::new(NonZeroUsize::new(1)?, ());
-/// selector.add(node_1.clone());
+/// let node_1_id = selector.add(node_1.clone());
 ///
 /// // Add a node with a weight of 2
 /// let node_2 = Node::<(), _>::new(NonZeroUsize::new(2)?, ());
@@ -159,7 +178,7 @@ pub use dashmap;
 /// // selecting the second node. Lets modify the weight so there's an equal
 /// // chance of selecting either node.
 ///
-/// selector.get_mut(node_1.id())?.set_weight(NonZeroUsize::new(1)?);
+/// selector.get_mut(node_1_id)?.set_weight(NonZeroUsize::new(1)?);
 ///
 /// // Any caches should be invalidated now.
 /// # None
@@ -248,9 +267,9 @@ where
         }
     }
 
-    /// Adds a new node to the selection. If lookups are cached, then callers
-    /// must invalidate the cache after adding a node. Otherwise, it is possible
-    /// to have incorrectly distributed selections.
+    /// Adds a new node to the selection with an opaque ID. If lookups are
+    /// cached, then callers must invalidate the cache after adding a node.
+    /// Otherwise, it is possible to have incorrectly distributed selections.
     ///
     /// # Safety
     ///
@@ -264,16 +283,38 @@ where
     /// present in the selection. For the non-panicking version of this method,
     /// see [`try_add_node`](#try_add_node).
     #[inline]
-    pub fn add(&self, node: Node<ExclusionTags, Metadata>) {
-        let id = node.node_id;
+    #[must_use]
+    pub fn add(&self, node: Node<ExclusionTags, Metadata>) -> NodeId {
+        let id = NodeId::new_opaque();
+        self.add_with_id(id, node);
+        id
+    }
+
+    /// Adds a new node to the selection with the provided ID. If lookups are
+    /// cached, then callers must invalidate the cache after adding a node.
+    /// Otherwise, it is possible to have incorrectly distributed selections.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding any sort of reference
+    /// into the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if the provided node has an id that is already
+    /// present in the selection. For the non-panicking version of this method,
+    /// see [`try_add_node`](#try_add_node).
+    #[inline]
+    pub fn add_with_id(&self, id: NodeId, node: Node<ExclusionTags, Metadata>) {
         if self.nodes.insert(id, node).is_some() {
             panic!("Node with duplicate id added: {}", id);
         }
     }
 
-    /// Tries to add the node to the selection. If lookups are cached, then
-    /// callers must invalidate the cache after adding a node. Otherwise, it is
-    /// possible to have incorrectly distributed selections.
+    /// Tries to add the node to the selection with an opaque ID. If lookups are
+    /// cached, then callers must invalidate the cache after adding a node.
+    /// Otherwise, it is possible to have incorrectly distributed selections.
     ///
     /// # Safety
     ///
@@ -286,11 +327,36 @@ where
     /// This method will fail if the node has an id that is already present in
     /// the selection.
     #[inline]
-    pub fn try_add(&self, node: Node<ExclusionTags, Metadata>) -> Result<(), DuplicateIdError> {
-        if self.nodes.contains_key(&node.id()) {
-            Err(DuplicateIdError(node.node_id))
+    pub fn try_add(&self, node: Node<ExclusionTags, Metadata>) -> Result<NodeId, DuplicateIdError> {
+        let id = NodeId::new_opaque();
+        self.try_add_with_id(id, node)?;
+        Ok(id)
+    }
+
+    /// Tries to add the node to the selection with the provided ID. If lookups
+    /// are cached, then callers must invalidate the cache after adding a node.
+    /// Otherwise, it is possible to have incorrectly distributed selections.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding any sort of reference
+    /// into the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
+    ///
+    /// # Errors
+    ///
+    /// This method will fail if the node has an id that is already present in
+    /// the selection.
+    #[inline]
+    pub fn try_add_with_id(
+        &self,
+        id: NodeId,
+        node: Node<ExclusionTags, Metadata>,
+    ) -> Result<(), DuplicateIdError> {
+        if self.nodes.contains_key(&id) {
+            Err(DuplicateIdError(id))
         } else {
-            self.nodes.insert(node.id(), node);
+            self.nodes.insert(id, node);
             Ok(())
         }
     }
@@ -354,10 +420,17 @@ where
                         .unwrap_or_default()
                 })
             })
-            .max_by(|a, b| {
-                a.score(item)
-                    .partial_cmp(&b.score(item))
-                    .unwrap_or(Ordering::Equal)
+            .max_by(|left, right| {
+                // wait for total_cmp to be stabilized. Until then, use the
+                // actual implementation.
+                // https://github.com/rust-lang/rust/issues/72599
+
+                let mut left = left.score(item).to_bits() as i64;
+                let mut right = right.score(item).to_bits() as i64;
+                left ^= (((left >> 63) as u64) >> 1) as i64;
+                right ^= (((right >> 63) as u64) >> 1) as i64;
+
+                left.cmp(&right)
             })
     }
 
@@ -420,9 +493,7 @@ where
         &self,
         item: &[u8],
         tags: Option<DashSet<ExclusionTags>>,
-    ) -> Option<RefMulti<Node<ExclusionTags, Metadata>>> {
-        use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-
+    ) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
         self.nodes
             .par_iter()
             .filter(|node| {
@@ -477,7 +548,7 @@ where
 }
 
 #[cfg(feature = "rayon")]
-impl<ExclusionTags, Metadata> FromParallelIterator<Node<ExclusionTags, Metadata>>
+impl<ExclusionTags, Metadata> FromParallelIterator<(NodeId, Node<ExclusionTags, Metadata>)>
     for NodeSelection<ExclusionTags, Metadata>
 where
     ExclusionTags: Send + Sync + Hash + Eq,
@@ -486,10 +557,10 @@ where
     #[inline]
     fn from_par_iter<I>(into_iter: I) -> Self
     where
-        I: IntoParallelIterator<Item = Node<ExclusionTags, Metadata>>,
+        I: IntoParallelIterator<Item = (NodeId, Node<ExclusionTags, Metadata>)>,
     {
         Self {
-            nodes: DashSet::from_par_iter(into_iter),
+            nodes: DashMap::from_par_iter(into_iter),
         }
     }
 }
@@ -514,7 +585,7 @@ where
     Metadata: Send + Sync,
 {
     type Item = <Self as IntoIterator>::Item;
-    type Iter = <DashSet<Self::Item> as IntoParallelIterator>::Iter;
+    type Iter = <DashMap<NodeId, Node<ExclusionTags, Metadata>> as IntoParallelIterator>::Iter;
 
     #[inline]
     fn into_par_iter(self) -> <Self as IntoParallelIterator>::Iter {
@@ -523,7 +594,7 @@ where
 }
 
 #[cfg(feature = "rayon")]
-impl<ExclusionTags, Metadata> ParallelExtend<Node<ExclusionTags, Metadata>>
+impl<ExclusionTags, Metadata> ParallelExtend<(NodeId, Node<ExclusionTags, Metadata>)>
     for NodeSelection<ExclusionTags, Metadata>
 where
     ExclusionTags: Send + Sync + Hash + Eq,
@@ -532,7 +603,7 @@ where
     #[inline]
     fn par_extend<I>(&mut self, extendable: I)
     where
-        I: IntoParallelIterator<Item = Node<ExclusionTags, Metadata>>,
+        I: IntoParallelIterator<Item = (NodeId, Node<ExclusionTags, Metadata>)>,
     {
         self.nodes.par_extend(extendable);
     }
@@ -637,8 +708,6 @@ where
 /// ```
 #[derive(Clone, Debug)]
 pub struct Node<ExclusionTags: Hash + Eq, Metadata> {
-    /// The associated node ID. This should be opaque to library users.
-    node_id: NodeId,
     /// The weight of a node. This is a relative value, and is used to determine
     /// how much traffic a node receives.
     weight: NonZeroUsize,
@@ -666,7 +735,6 @@ where
     #[must_use]
     pub fn new(weight: NonZeroUsize, metadata: Metadata) -> Self {
         Self {
-            node_id: NodeId::new_opaque(),
             seed: rand::random(),
             weight,
             exclusions: DashSet::new(),
@@ -688,7 +756,6 @@ where
         exclusions: DashSet<ExclusionTags>,
     ) -> Self {
         Self {
-            node_id: NodeId::new_opaque(),
             seed: rand::random(),
             weight,
             exclusions,
@@ -704,13 +771,11 @@ where
     #[inline]
     #[must_use]
     pub fn from_parts(
-        node_id: NodeId,
         weight: NonZeroUsize,
         exclusions: DashSet<ExclusionTags>,
         metadata: Metadata,
     ) -> Self {
         Self {
-            node_id,
             weight,
             seed: rand::random(),
             exclusions,
@@ -745,41 +810,88 @@ where
     pub fn data(&self) -> &Metadata {
         &self.metadata
     }
+}
 
-    /// Returns the id of the node.
+impl<ExclusionTags, Metadata> Node<ExclusionTags, Metadata>
+where
+    ExclusionTags: Hash + Eq,
+    Metadata: Default,
+{
+    /// Constructs a new node with an opaque ID and no exclusions, using the
+    /// default implementation of `Metadata`.
+    ///
+    /// `weight` should not exceed 2^52. `weight` is internally casted as a
+    /// [`f64`], and loss of precision may occur if `weight` exceeds [`f64`]'s
+    /// mantissa of 52 bits.This should not be a problem for most use cases.
     #[inline]
-    pub fn id(&self) -> NodeId {
-        self.node_id
+    #[must_use]
+    pub fn with_default(weight: NonZeroUsize) -> Self {
+        Self::new(weight, Metadata::default())
     }
 }
 
-impl<ExclusionTags: Hash + Eq, Metadata> Hash for Node<ExclusionTags, Metadata> {
+impl<ExclusionTags, Metadata> Hash for Node<ExclusionTags, Metadata>
+where
+    ExclusionTags: Hash + Eq,
+    Metadata: Hash,
+{
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.node_id.hash(state);
+        self.weight.hash(state);
+        self.seed.hash(state);
+        self.metadata.hash(state);
     }
 }
 
-impl<ExclusionTags: Hash + Eq, Metadata> PartialEq for Node<ExclusionTags, Metadata> {
+impl<ExclusionTags, Metadata> PartialEq for Node<ExclusionTags, Metadata>
+where
+    ExclusionTags: Hash + Eq,
+    Metadata: PartialEq,
+{
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.node_id.eq(&other.node_id)
+        self.weight == other.weight && self.seed == other.seed && self.metadata == other.metadata
     }
 }
 
-impl<ExclusionTags: Hash + Eq, Metadata> Eq for Node<ExclusionTags, Metadata> {}
+impl<ExclusionTags, Metadata> Eq for Node<ExclusionTags, Metadata>
+where
+    ExclusionTags: Hash + Eq,
+    Metadata: Eq,
+{
+}
 
-impl<ExclusionTags: Hash + Eq, Metadata> PartialOrd for Node<ExclusionTags, Metadata> {
+impl<ExclusionTags, Metadata> PartialOrd for Node<ExclusionTags, Metadata>
+where
+    ExclusionTags: Hash + Eq,
+    Metadata: PartialOrd,
+{
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.node_id.partial_cmp(&other.node_id)
+        match self.metadata.partial_cmp(&other.metadata) {
+            None | Some(Ordering::Equal) => match self.weight.cmp(&other.weight) {
+                Ordering::Equal => Some(self.seed.cmp(&other.seed)),
+                cmp => Some(cmp),
+            },
+            cmp => cmp,
+        }
     }
 }
 
-impl<ExclusionTags: Hash + Eq, Metadata> Ord for Node<ExclusionTags, Metadata> {
+impl<ExclusionTags, Metadata> Ord for Node<ExclusionTags, Metadata>
+where
+    ExclusionTags: Hash + Eq,
+    Metadata: Ord,
+{
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        self.node_id.cmp(&other.node_id)
+        match self.metadata.cmp(&other.metadata) {
+            Ordering::Equal => match self.weight.cmp(&other.weight) {
+                Ordering::Equal => self.seed.cmp(&other.seed),
+                cmp => cmp,
+            },
+            cmp => cmp,
+        }
     }
 }
 
@@ -797,8 +909,8 @@ impl Hash64 {
 }
 
 /// The counter used for opaque node ids. This is just incrementally updated,
-/// which should solve uniqueness issues. If there is a usecase to generate more
-/// than [`usize`] IDs, then please file an issue.
+/// which should solve uniqueness issues. If there is a use case to generate
+/// more than [`usize`] IDs, then please file an issue.
 static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// An opaque representation of a node ID.
@@ -856,7 +968,6 @@ mod hash64 {
 #[cfg(test)]
 mod node_selection_no_exclusions {
     use std::collections::BTreeMap;
-    use std::iter::FromIterator;
 
     use super::*;
 
@@ -865,19 +976,15 @@ mod node_selection_no_exclusions {
         let node_selection = NodeSelection::<(), ()>::new();
 
         let mut nodes: BTreeMap<_, usize> = unsafe {
-            BTreeMap::from_iter(
-                vec![
-                    (NodeId(0), NonZeroUsize::new_unchecked(100)),
-                    (NodeId(1), NonZeroUsize::new_unchecked(200)),
-                    (NodeId(2), NonZeroUsize::new_unchecked(300)),
-                ]
-                .into_iter()
-                .map(|(id, weight)| (Node::from_parts(id, weight, DashSet::new(), ()), 0)),
-            )
+            let mut map = BTreeMap::new();
+            map.insert(Node::with_default(NonZeroUsize::new_unchecked(100)), 0);
+            map.insert(Node::with_default(NonZeroUsize::new_unchecked(200)), 0);
+            map.insert(Node::with_default(NonZeroUsize::new_unchecked(300)), 0);
+            map
         };
 
         for node in nodes.keys() {
-            node_selection.add(node.clone());
+            let _ = node_selection.add(node.clone());
         }
 
         for _ in 0..600 {
@@ -899,20 +1006,17 @@ mod node_selection_no_exclusions {
     fn sanity_check_unweighted() {
         let node_selection = NodeSelection::<(), ()>::new();
 
-        let mut nodes: BTreeMap<_, usize> = unsafe {
-            BTreeMap::from_iter(
-                vec![
-                    (NodeId(0), NonZeroUsize::new_unchecked(1)),
-                    (NodeId(1), NonZeroUsize::new_unchecked(1)),
-                    (NodeId(2), NonZeroUsize::new_unchecked(1)),
-                ]
-                .into_iter()
-                .map(|(id, weight)| (Node::from_parts(id, weight, DashSet::new(), ()), 0)),
-            )
+        let mut nodes: BTreeMap<_, usize> = {
+            let weight = unsafe { NonZeroUsize::new_unchecked(1) };
+            let mut map = BTreeMap::new();
+            map.insert(Node::with_default(weight), 0);
+            map.insert(Node::with_default(weight), 0);
+            map.insert(Node::with_default(weight), 0);
+            map
         };
 
         for node in nodes.keys() {
-            node_selection.add(node.clone());
+            let _ = node_selection.add(node.clone());
         }
 
         for _ in 0..600 {
@@ -949,39 +1053,18 @@ mod node_selection_exclusions {
         let exclusions = DashSet::from_iter([Exclusions::A]);
 
         let mut nodes: BTreeMap<_, usize> = unsafe {
-            BTreeMap::from_iter([
-                (
-                    Node::from_parts(
-                        NodeId(0),
-                        NonZeroUsize::new_unchecked(100),
-                        DashSet::new(),
-                        (),
-                    ),
-                    0,
-                ),
-                (
-                    Node::from_parts(
-                        NodeId(1),
-                        NonZeroUsize::new_unchecked(200),
-                        exclusions.clone(),
-                        (),
-                    ),
-                    0,
-                ),
-                (
-                    Node::from_parts(
-                        NodeId(2),
-                        NonZeroUsize::new_unchecked(300),
-                        DashSet::new(),
-                        (),
-                    ),
-                    0,
-                ),
-            ])
+            let mut map = BTreeMap::new();
+            map.insert(Node::with_default(NonZeroUsize::new_unchecked(100)), 0);
+            map.insert(
+                Node::with_exclusions(NonZeroUsize::new_unchecked(200), (), exclusions.clone()),
+                0,
+            );
+            map.insert(Node::with_default(NonZeroUsize::new_unchecked(300)), 0);
+            map
         };
 
         for node in nodes.keys() {
-            node_selection.add(node.clone());
+            let _ = node_selection.add(node.clone());
         }
 
         for _ in 0..600 {
@@ -1010,40 +1093,17 @@ mod node_selection_exclusions {
 
         let exclusions = DashSet::from_iter([Exclusions::A]);
 
-        let mut nodes: BTreeMap<_, usize> = unsafe {
-            BTreeMap::from_iter([
-                (
-                    Node::from_parts(
-                        NodeId(0),
-                        NonZeroUsize::new_unchecked(1),
-                        DashSet::new(),
-                        (),
-                    ),
-                    0,
-                ),
-                (
-                    Node::from_parts(
-                        NodeId(1),
-                        NonZeroUsize::new_unchecked(1),
-                        exclusions.clone(),
-                        (),
-                    ),
-                    0,
-                ),
-                (
-                    Node::from_parts(
-                        NodeId(2),
-                        NonZeroUsize::new_unchecked(1),
-                        DashSet::new(),
-                        (),
-                    ),
-                    0,
-                ),
-            ])
+        let mut nodes: BTreeMap<_, usize> = {
+            let mut map = BTreeMap::new();
+            let weight = unsafe { NonZeroUsize::new_unchecked(1) };
+            map.insert(Node::with_default(weight), 0);
+            map.insert(Node::with_exclusions(weight, (), exclusions.clone()), 0);
+            map.insert(Node::with_default(weight), 0);
+            map
         };
 
         for node in nodes.keys() {
-            node_selection.add(node.clone());
+            let _ = node_selection.add(node.clone());
         }
 
         for _ in 0..600 {
@@ -1055,7 +1115,7 @@ mod node_selection_exclusions {
             }
         }
 
-        let range = (300 - 30)..(300 + 30);
+        let range = (300 - 50)..(300 + 50);
         for (node, counts) in nodes {
             if node.exclusions.is_empty() {
                 assert!(range.contains(&counts));
