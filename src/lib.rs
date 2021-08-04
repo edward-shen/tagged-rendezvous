@@ -14,8 +14,9 @@
 //! available or unavailable. Additionally, it should be able to determine the
 //! weight of each node.
 //!
-//! The entry point of this crate is [`NodeSelection`]. Examples of construction
-//! and usage are included in its documentation.
+//! The entry point of this crate is [`NodeSelection`] or [`BitNodeSelection`].
+//! Examples of construction and usage are included in their respective
+//! documentation.
 
 // Deny unsafe code, but allow unsafe code in tests.
 #![cfg_attr(not(test), forbid(unsafe_code))]
@@ -50,6 +51,7 @@ use dashmap::mapref::one::RefMut;
 use dashmap::{DashMap, DashSet};
 use murmur3::murmur3_x64_128;
 
+/// Contains the error type used by this crate.
 mod error;
 
 // Re-export the dashmap crate so users don't need to manually import it
@@ -109,6 +111,10 @@ pub use error::*;
 /// In a more complex case, if nodes with weights 1, 2, and 3 are present, and
 /// the node with weight 2 is excluded, then the probability of selecting a node
 /// becomes 25% and 75% respectively.
+///
+/// Note that if [`BitAnd`] can be performed on `ExclusionTags` in an efficient
+/// way (such as for bitflags), it is highly recommended to use
+/// [`BitNodeSelection`] instead.
 ///
 /// # Examples
 ///
@@ -245,7 +251,7 @@ where
 {
     /// Finds a node that is responsible for the provided item with no
     /// exclusions. This lookup is performed in serial. Consider
-    /// [`par_get_node`](#par_get_node) that uses rayon to parallelize the
+    /// [`par_get`](#par_get) that uses rayon to parallelize the
     /// lookup.
     ///
     /// # Safety
@@ -302,18 +308,7 @@ where
                         .unwrap_or_default()
                 })
             })
-            .max_by(|left, right| {
-                // wait for total_cmp to be stabilized. Until then, use the
-                // actual implementation.
-                // https://github.com/rust-lang/rust/issues/72599
-
-                let mut left = left.score(item).to_bits() as i64;
-                let mut right = right.score(item).to_bits() as i64;
-                left ^= (((left >> 63) as u64) >> 1) as i64;
-                right ^= (((right >> 63) as u64) >> 1) as i64;
-
-                left.cmp(&right)
-            })
+            .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
     }
 }
 
@@ -325,11 +320,12 @@ where
     /// Finds a node that is responsible for the provided item, filtering out
     /// nodes that refuse to accept the provided tags. This lookup is performed
     /// in parallel. Requires the `rayon` feature.
+    #[must_use]
     #[cfg(feature = "rayon")]
-    pub fn par_get_node(
+    pub fn par_get(
         &self,
         item: &[u8],
-        tags: Option<DashSet<ExclusionTags>>,
+        tags: Option<&DashSet<ExclusionTags>>,
     ) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
         self.nodes
             .par_iter()
@@ -340,22 +336,69 @@ where
                         .unwrap_or_default()
                 })
             })
-            .max_by(|a, b| {
-                a.score(item)
-                    .partial_cmp(&b.score(item))
-                    .unwrap_or(Ordering::Equal)
-            })
+            .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
     }
 }
 
 /// Like [`NodeSelection`], but specialized for bitflags.
+///
+/// Usage of [`BitNodeSelection`] is recommended over [`NodeSelection`] for
+/// performance reasons, but is sometimes not possible if `ExclusionTags` does
+/// not implement [`BitAnd`].
+///
+/// In most cases, the API is identical to [`NodeSelection`] and is intuitive
+/// for the bitflag use case. The only noteworthy different is that you must
+/// use [`BitNode`] instead of [`Node`].
 ///
 /// Note that `ExclusionTags` must also implement [`Default`]. This is not a
 /// problem for raw bitflags, but for types derived from the [`bitflags` crate],
 /// then you will need to implement [`Default`] on the type. This default value
 /// should represent when all flags are disabled.
 ///
-/// Performance on lookups are now `O(n)`, where `n` is the number of nodes.
+/// Performance on lookups are now `O(nm)`, where `n` is the number of nodes
+/// and `m` is the cost to perform `BitAnd` on `ExclusionTags`. For bitflags,
+/// this is `O(n)`.
+///
+/// # Examples
+///
+/// ```
+/// # use weighted_node_selection::*;
+/// # fn main() -> () {
+/// # example();
+/// # }
+/// #
+/// # fn example() -> Option<()> {
+/// use std::num::NonZeroUsize;
+/// use std::iter::FromIterator;
+///
+/// use dashmap::DashSet;
+///
+/// const FLAG_A: u8 = 0b01;
+/// const FLAG_B: u8 = 0b10;
+///
+/// let selector = BitNodeSelection::new();
+///
+/// // Add a 3 nodes, one with an exclusion tag.
+/// let exclusions = FLAG_A | FLAG_B;
+/// let node_1 = BitNode::new(NonZeroUsize::new(1)?, ());
+/// selector.add(node_1.clone());
+/// let node_2 = BitNode::with_exclusions(NonZeroUsize::new(1)?, (), exclusions);
+/// selector.add(node_2.clone());
+/// let node_3 = BitNode::new(NonZeroUsize::new(1)?, ());
+/// selector.add(node_3.clone());
+///
+/// // There's a 33% chance of selecting any node, if no tags are provided.
+/// selector.get(b"hello world")?;
+///
+/// // There's a equal chance of getting node 1 or node 3 since node 2 is
+/// // excluded.
+/// selector.get_with_exclusions(b"hello world", exclusions)?;
+/// # None
+/// # }
+/// ```
+///
+/// More examples (albeit for a more general use case) can be found in
+/// [`NodeSelection`].
 ///
 /// [`bitflags` crate]: https://docs.rs/bitflags/
 #[derive(Clone, Debug)]
@@ -370,7 +413,7 @@ where
 {
     /// Finds a node that is responsible for the provided item with no
     /// exclusions. This lookup is performed in serial. Consider
-    /// [`par_get_node`](#par_get_node) that uses rayon to parallelize the
+    /// [`par_get`](#par_get) that uses rayon to parallelize the
     /// lookup.
     ///
     /// # Safety
@@ -402,18 +445,7 @@ where
         self.nodes
             .iter()
             .filter(|entry| entry.value().exclusions & tags == ExclusionTags::default())
-            .max_by(|left, right| {
-                // wait for total_cmp to be stabilized. Until then, use the
-                // actual implementation.
-                // https://github.com/rust-lang/rust/issues/72599
-
-                let mut left = left.score(item).to_bits() as i64;
-                let mut right = right.score(item).to_bits() as i64;
-                left ^= (((left >> 63) as u64) >> 1) as i64;
-                right ^= (((right >> 63) as u64) >> 1) as i64;
-
-                left.cmp(&right)
-            })
+            .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
     }
 }
 
@@ -426,7 +458,7 @@ where
     /// nodes that refuse to accept the provided tags. This lookup is performed
     /// in parallel. Requires the `rayon` feature.
     #[cfg(feature = "rayon")]
-    pub fn par_get_node(
+    pub fn par_get(
         &self,
         item: &[u8],
         tags: ExclusionTags,
@@ -434,16 +466,14 @@ where
         self.nodes
             .par_iter()
             .filter(|node| node.exclusions & tags == ExclusionTags::default())
-            .max_by(|a, b| {
-                a.score(item)
-                    .partial_cmp(&b.score(item))
-                    .unwrap_or(Ordering::Equal)
-            })
+            .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
     }
 }
 
 macro_rules! impl_node_selection {
-    ($struct_name:ident, $node:ident : $($bounds:path)*) => {
+    // this $bounds meme is a hack to get around the fact that we can't
+    // represent trait bounds in macros.
+    ($struct_name:ident, $node:ident $(: $bounds:path )?) => {
         impl<ExclusionTags, Metadata> $struct_name<ExclusionTags, Metadata>
         where
             ExclusionTags: Hash + Eq + $($bounds)*,
@@ -730,12 +760,14 @@ macro_rules! impl_node_selection {
     };
 }
 
-impl_node_selection!(NodeSelection, Node:);
+impl_node_selection!(NodeSelection, Node);
 
 impl_node_selection!(BitNodeSelection, BitNode: BitAnd);
 
 macro_rules! impl_node {
-    ($struct_name:ident, $excludes_type:ty : $($bounds:path)*) => {
+    // this $bounds meme is a hack to get around the fact that we can't
+    // represent trait bounds in macros.
+    ($struct_name:ident, $excludes_type:ty  $(: $bounds:path )?) => {
         impl<ExclusionTags, Metadata> $struct_name<ExclusionTags, Metadata>
         where
             ExclusionTags: Hash + Eq + $($bounds)*,
@@ -1034,7 +1066,7 @@ where
     }
 }
 
-impl_node!(Node, DashSet<ExclusionTags>: );
+impl_node!(Node, DashSet<ExclusionTags>);
 
 /// Like [`Node`], but optimized for bitflags.
 ///
@@ -1168,6 +1200,33 @@ mod hash64 {
             Hash64(0xffffffffffffff).as_normalized_float(),
             0.9999999999999999
         );
+    }
+}
+
+/// wait for [`f64::total_cmp`] to be stabilized. Until then, use the actual
+/// implementation. See the [GitHub issue] for more information.
+///
+/// [Github issue]:  https://github.com/rust-lang/rust/issues/72599
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+fn f64_total_ordering(left: f64, right: f64) -> Ordering {
+    let mut left = left.to_bits() as i64;
+    let mut right = right.to_bits() as i64;
+    left ^= (((left >> 63) as u64) >> 1) as i64;
+    right ^= (((right >> 63) as u64) >> 1) as i64;
+    left.cmp(&right)
+}
+
+#[cfg(test)]
+mod node_selection {
+    use super::*;
+
+    #[should_panic]
+    #[test]
+    fn duplicate_id_will_panic() {
+        let selector = NodeSelection::<(), ()>::new();
+        let id = unsafe { NonZeroUsize::new_unchecked(1) };
+        selector.add_with_id(NodeId::new(0), Node::with_default(id));
+        selector.add_with_id(NodeId::new(0), Node::with_default(id));
     }
 }
 
@@ -1315,6 +1374,175 @@ mod node_selection_exclusions {
         for _ in 0..600 {
             let node_selected = node_selection
                 .get_with_exclusions(&(rand::random::<f64>()).to_le_bytes(), &exclusions);
+            if let Some(node) = node_selected {
+                let node = nodes.get_mut(node.value()).unwrap();
+                *node += 1;
+            }
+        }
+
+        let range = (300 - 50)..(300 + 50);
+        for (node, counts) in nodes {
+            if node.exclusions.is_empty() {
+                assert!(range.contains(&counts));
+            } else {
+                assert_eq!(counts, 0);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod bit_node_selection {
+
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[test]
+    fn exclusions() {
+        let node_selection = BitNodeSelection::<u8, ()>::new();
+        let exclusions = 0b01;
+
+        let mut nodes: BTreeMap<_, usize> = unsafe {
+            let mut map = BTreeMap::new();
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(100)), 0);
+            map.insert(
+                BitNode::with_exclusions(NonZeroUsize::new_unchecked(200), (), exclusions),
+                0,
+            );
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(300)), 0);
+            map
+        };
+
+        for node in nodes.keys() {
+            let _ = node_selection.add(node.clone());
+        }
+
+        for _ in 0..600 {
+            let node_selected = node_selection
+                .get_with_exclusions(&(rand::random::<f64>()).to_le_bytes(), exclusions);
+            if let Some(node) = node_selected {
+                let node = nodes.get_mut(node.value()).unwrap();
+                *node += 1;
+            }
+        }
+
+        for (node, counts) in nodes {
+            let anchor = node.weight.get() as usize * 3 / 2;
+            if node.exclusions == 0 {
+                let range = (anchor - 50)..(anchor + 50);
+                assert!(range.contains(&counts));
+            } else {
+                assert_eq!(counts, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn no_exclusions() {
+        let node_selection = BitNodeSelection::<u8, ()>::new();
+
+        let mut nodes: BTreeMap<_, usize> = unsafe {
+            let mut map = BTreeMap::new();
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(100)), 0);
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(200)), 0);
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(300)), 0);
+            map
+        };
+
+        for node in nodes.keys() {
+            let _ = node_selection.add(node.clone());
+        }
+
+        for _ in 0..600 {
+            let node_selected = node_selection.get(&(rand::random::<f64>()).to_le_bytes());
+            if let Some(node) = node_selected {
+                let node = nodes.get_mut(node.value()).unwrap();
+                *node += 1;
+            }
+        }
+
+        for (node, counts) in nodes {
+            let anchor = node.weight.get() as usize;
+            let range = (anchor - 50)..(anchor + 50);
+            assert!(range.contains(&counts));
+        }
+    }
+}
+
+#[cfg(all(test, feature = "rayon"))]
+mod par_tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[test]
+    fn bit_node_selection_get() {
+        let node_selection = BitNodeSelection::<u8, ()>::new();
+        let exclusions = 0b01;
+
+        let mut nodes: BTreeMap<_, usize> = unsafe {
+            let mut map = BTreeMap::new();
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(100)), 0);
+            map.insert(
+                BitNode::with_exclusions(NonZeroUsize::new_unchecked(200), (), exclusions),
+                0,
+            );
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(300)), 0);
+            map
+        };
+
+        for node in nodes.keys() {
+            let _ = node_selection.add(node.clone());
+        }
+
+        for _ in 0..600 {
+            let node_selected =
+                node_selection.par_get(&(rand::random::<f64>()).to_le_bytes(), exclusions);
+            if let Some(node) = node_selected {
+                let node = nodes.get_mut(node.value()).unwrap();
+                *node += 1;
+            }
+        }
+
+        for (node, counts) in nodes {
+            let anchor = node.weight.get() as usize * 3 / 2;
+            if node.exclusions == 0 {
+                let range = (anchor - 50)..(anchor + 50);
+                assert!(range.contains(&counts));
+            } else {
+                assert_eq!(counts, 0);
+            }
+        }
+    }
+
+    #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+    enum Exclusions {
+        A,
+    }
+
+    #[test]
+    fn node_selection_get() {
+        let node_selection = NodeSelection::<Exclusions, ()>::new();
+
+        let exclusions = DashSet::from_iter([Exclusions::A]);
+
+        let mut nodes: BTreeMap<_, usize> = {
+            let mut map = BTreeMap::new();
+            let weight = unsafe { NonZeroUsize::new_unchecked(1) };
+            map.insert(Node::with_default(weight), 0);
+            map.insert(Node::with_exclusions(weight, (), exclusions.clone()), 0);
+            map.insert(Node::with_default(weight), 0);
+            map
+        };
+
+        for node in nodes.keys() {
+            let _ = node_selection.add(node.clone());
+        }
+
+        for _ in 0..600 {
+            let node_selected =
+                node_selection.par_get(&(rand::random::<f64>()).to_le_bytes(), Some(&exclusions));
             if let Some(node) = node_selected {
                 let node = nodes.get_mut(node.value()).unwrap();
                 *node += 1;
