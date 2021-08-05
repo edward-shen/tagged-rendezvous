@@ -6,7 +6,7 @@
 [unsafe-url]: https://github.com/rust-secure-code/safety-dance
 [cov-svg]: https://codecov.io/gh/edward-shen/tagged-rendezvous/branch/master/graph/badge.svg?token=GI53X8LB0R
 [cov-url]: https://codecov.io/gh/edward-shen/tagged-rendezvous
-[docs-svg]: https://img.shields.io/docsrs/tagged-rendezvous
+[docs-svg]: https://docs.rs/tagged-rendezvous/badge.svg
 [docs-url]: https://docs.rs/tagged-rendezvous
 
 `tagged-rendezvous` is a toy crate for implementing [rendezvous hashing] with
