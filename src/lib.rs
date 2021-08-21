@@ -989,14 +989,15 @@ macro_rules! impl_node {
             /// problem for most use cases.
             #[inline]
             #[must_use]
-            pub fn from_parts(
+            pub fn from_parts<Rng: rand::Rng>(
+                rng: &mut Rng,
                 weight: NonZeroUsize,
                 exclusions: $excludes_type,
                 metadata: Metadata,
             ) -> Self {
                 Self {
                     weight,
-                    seed: rand::random(),
+                    seed: rng.gen(),
                     exclusions,
                     metadata,
                 }
