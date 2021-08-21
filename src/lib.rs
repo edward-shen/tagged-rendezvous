@@ -1480,7 +1480,38 @@ mod node_selection_no_exclusions {
             }
         }
 
-        let range = (200 - 30)..(200 + 30);
+        let range = (200 - 50)..(200 + 50);
+        for counts in nodes.values() {
+            assert!(range.contains(counts));
+        }
+    }
+
+    #[test]
+    fn sanity_check_unweighted_n() {
+        let node_selection = NodeSelection::<(), ()>::new();
+
+        let mut nodes: BTreeMap<_, usize> = {
+            let weight = unsafe { NonZeroUsize::new_unchecked(1) };
+            let mut map = BTreeMap::new();
+            map.insert(Node::with_default(weight), 0);
+            map.insert(Node::with_default(weight), 0);
+            map.insert(Node::with_default(weight), 0);
+            map
+        };
+
+        for node in nodes.keys() {
+            let _ = node_selection.add(node.clone());
+        }
+
+        for _ in 0..600 {
+            let nodes_selected = node_selection.get_n(&(rand::random::<f64>()).to_le_bytes(), 2);
+            for node in nodes_selected {
+                let node = nodes.get_mut(node.value()).unwrap();
+                *node += 1;
+            }
+        }
+
+        let range = (400 - 30)..(400 + 30);
         for counts in nodes.values() {
             assert!(range.contains(counts));
         }
@@ -1577,6 +1608,47 @@ mod node_selection_exclusions {
             }
         }
     }
+
+    #[test]
+    fn sanity_check_unweighted_n() {
+        let node_selection = NodeSelection::<Exclusions, ()>::new();
+
+        let exclusions = DashSet::from_iter([Exclusions::A]);
+
+        let mut nodes: BTreeMap<_, usize> = {
+            let mut map = BTreeMap::new();
+            let weight = unsafe { NonZeroUsize::new_unchecked(1) };
+            map.insert(Node::with_default(weight), 0);
+            map.insert(Node::with_exclusions(weight, (), exclusions.clone()), 0);
+            map.insert(Node::with_default(weight), 0);
+            map
+        };
+
+        for node in nodes.keys() {
+            let _ = node_selection.add(node.clone());
+        }
+
+        for _ in 0..600 {
+            let node_selected = node_selection.get_n_with_exclusions(
+                &(rand::random::<f64>()).to_le_bytes(),
+                2,
+                &exclusions,
+            );
+            for node in node_selected {
+                let node = nodes.get_mut(node.value()).unwrap();
+                *node += 1;
+            }
+        }
+
+        let range = (600 - 50)..(600 + 50);
+        for (node, counts) in nodes {
+            if node.exclusions.is_empty() {
+                assert!(range.contains(&counts));
+            } else {
+                assert_eq!(counts, 0);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1656,6 +1728,37 @@ mod bit_node_selection {
             assert!(range.contains(&counts));
         }
     }
+
+    #[test]
+    fn get_n() {
+        let node_selection = BitNodeSelection::<u8, ()>::new();
+
+        let mut nodes: BTreeMap<_, usize> = unsafe {
+            let mut map = BTreeMap::new();
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(200)), 0);
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(200)), 0);
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(200)), 0);
+            map
+        };
+
+        for node in nodes.keys() {
+            let _ = node_selection.add(node.clone());
+        }
+
+        for _ in 0..600 {
+            let node_selected = node_selection.get_n(&(rand::random::<f64>()).to_le_bytes(), 2);
+            for node in node_selected {
+                let node = nodes.get_mut(node.value()).unwrap();
+                *node += 1;
+            }
+        }
+
+        for (node, counts) in nodes {
+            let anchor = node.weight.get() as usize * 2;
+            let range = (anchor - 50)..(anchor + 50);
+            assert!(range.contains(&counts));
+        }
+    }
 }
 
 #[cfg(all(test, feature = "rayon"))]
@@ -1704,6 +1807,46 @@ mod par_tests {
         }
     }
 
+    #[test]
+    fn bit_node_selection_get_n() {
+        let node_selection = BitNodeSelection::<u8, ()>::new();
+        let exclusions = 0b01;
+
+        let mut nodes: BTreeMap<_, usize> = unsafe {
+            let mut map = BTreeMap::new();
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(100)), 0);
+            map.insert(
+                BitNode::with_exclusions(NonZeroUsize::new_unchecked(200), (), exclusions),
+                0,
+            );
+            map.insert(BitNode::with_default(NonZeroUsize::new_unchecked(300)), 0);
+            map
+        };
+
+        for node in nodes.keys() {
+            let _ = node_selection.add(node.clone());
+        }
+
+        for _ in 0..600 {
+            let node_selected =
+                node_selection.par_get_n(&(rand::random::<f64>()).to_le_bytes(), 2, exclusions);
+            for node in node_selected {
+                let node = nodes.get_mut(node.value()).unwrap();
+                *node += 1;
+            }
+        }
+
+        for (node, counts) in nodes {
+            let anchor = 600 as usize;
+            if node.exclusions == 0 {
+                let range = (anchor - 50)..(anchor + 50);
+                assert!(range.contains(&counts));
+            } else {
+                assert_eq!(counts, 0);
+            }
+        }
+    }
+
     #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
     enum Exclusions {
         A,
@@ -1738,6 +1881,47 @@ mod par_tests {
         }
 
         let range = (300 - 50)..(300 + 50);
+        for (node, counts) in nodes {
+            if node.exclusions.is_empty() {
+                assert!(range.contains(&counts));
+            } else {
+                assert_eq!(counts, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn node_selection_get_n() {
+        let node_selection = NodeSelection::<Exclusions, ()>::new();
+
+        let exclusions = DashSet::from_iter([Exclusions::A]);
+
+        let mut nodes: BTreeMap<_, usize> = {
+            let mut map = BTreeMap::new();
+            let weight = unsafe { NonZeroUsize::new_unchecked(1) };
+            map.insert(Node::with_default(weight), 0);
+            map.insert(Node::with_exclusions(weight, (), exclusions.clone()), 0);
+            map.insert(Node::with_default(weight), 0);
+            map
+        };
+
+        for node in nodes.keys() {
+            let _ = node_selection.add(node.clone());
+        }
+
+        for _ in 0..600 {
+            let node_selected = node_selection.par_get_n(
+                &(rand::random::<f64>()).to_le_bytes(),
+                2,
+                Some(&exclusions),
+            );
+            for node in node_selected {
+                let node = nodes.get_mut(node.value()).unwrap();
+                *node += 1;
+            }
+        }
+
+        let range = (600 - 50)..(600 + 50);
         for (node, counts) in nodes {
             if node.exclusions.is_empty() {
                 assert!(range.contains(&counts));
