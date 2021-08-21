@@ -46,6 +46,8 @@ use rayon::iter::{
     FromParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelExtend,
     ParallelIterator,
 };
+#[cfg(feature = "rayon")]
+use rayon::slice::ParallelSliceMut;
 
 use dashmap::mapref::multiple::RefMulti;
 use dashmap::mapref::one::RefMut;
@@ -311,6 +313,83 @@ where
             })
             .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
     }
+
+    /// Returns the top `n` nodes that are responsible for the provided item
+    /// with no exclusions. This lookup is performed in serial. Consider
+    /// [`par_get_n`](#par_get_n) that uses rayon to parallelize the lookup. If
+    /// `n` is greater than the number of nodes, then all nodes are returned, in
+    /// order of score.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
+    #[inline]
+    #[must_use]
+    pub fn get_n(
+        &self,
+        item: &[u8],
+        n: usize,
+    ) -> Vec<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+        self.get_n_internal(item, n, None)
+    }
+
+    /// Like [`get_n`](#get_n), but allows the caller to provide a list of
+    /// tags, which nodes that exclude those tags will be skipped.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
+    #[inline]
+    #[must_use]
+    pub fn get_n_with_exclusions(
+        &self,
+        item: &[u8],
+        n: usize,
+        tags: &DashSet<ExclusionTags>,
+    ) -> Vec<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+        self.get_n_internal(item, n, Some(tags))
+    }
+
+    /// Returns a node that is responsible for the provided item. This lookup
+    /// has asymptotic complexity of `O(log(m) * n^2)`, where `m` is the number
+    /// of nodes, and `n` is the number of tags given. As a result, callers
+    /// should generally use a small number of tags, either on node restrictions
+    /// or on the provided tags for best performance.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
+    fn get_n_internal(
+        &self,
+        item: &[u8],
+        n: usize,
+        tags: Option<&DashSet<ExclusionTags>>,
+    ) -> Vec<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+        let mut nodes = self
+            .nodes
+            .iter()
+            .filter(|entry| {
+                !entry.value().exclusions.iter().any(|exclusions| {
+                    tags.as_ref()
+                        .map(|set| set.contains(&exclusions))
+                        .unwrap_or_default()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        nodes.sort_unstable_by(|left, right| {
+            f64_total_ordering(left.score(item), right.score(item))
+        });
+
+        nodes.truncate(n);
+        nodes
+    }
 }
 
 impl<ExclusionTags, Metadata> NodeSelection<ExclusionTags, Metadata>
@@ -338,6 +417,37 @@ where
                 })
             })
             .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
+    }
+
+    /// Finds `n` nodes that is responsible for the provided item, filtering out
+    /// nodes that refuse to accept the provided tags. This lookup is performed
+    /// in parallel. Requires the `rayon` feature.
+    #[must_use]
+    #[cfg(feature = "rayon")]
+    pub fn par_get_n(
+        &self,
+        item: &[u8],
+        n: usize,
+        tags: Option<&DashSet<ExclusionTags>>,
+    ) -> Vec<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+        let mut nodes = self
+            .nodes
+            .par_iter()
+            .filter(|entry| {
+                !entry.value().exclusions.iter().any(|exclusions| {
+                    tags.as_ref()
+                        .map(|set| set.contains(&exclusions))
+                        .unwrap_or_default()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        nodes.par_sort_unstable_by(|left, right| {
+            f64_total_ordering(left.score(item), right.score(item))
+        });
+
+        nodes.truncate(n);
+        nodes
     }
 }
 
@@ -448,6 +558,57 @@ where
             .filter(|entry| entry.value().exclusions & tags == ExclusionTags::default())
             .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
     }
+
+    /// Returns the top `n` nodes that are responsible for the provided item
+    /// with no exclusions. This lookup is performed in serial. Consider
+    /// [`par_get_n`](#par_get_n) that uses rayon to parallelize the lookup. If
+    /// `n` is greater than the number of nodes, then all nodes are returned, in
+    /// order of score.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
+    #[inline]
+    #[must_use]
+    pub fn get_n(
+        &self,
+        item: &[u8],
+        n: usize,
+    ) -> Vec<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+        self.get_n_with_exclusions(item, n, ExclusionTags::default())
+    }
+
+    /// Like [`get_n`](#get_n), but allows the caller to provide a list of
+    /// tags, which nodes that exclude those tags will be skipped.
+    ///
+    /// # Safety
+    ///
+    /// This method may deadlock if called when holding a mutable reference into
+    /// the map. Callers must ensure that references are dropped as soon as
+    /// possible, especially in single threaded contexts.
+    #[inline]
+    #[must_use]
+    pub fn get_n_with_exclusions(
+        &self,
+        item: &[u8],
+        n: usize,
+        tags: ExclusionTags,
+    ) -> Vec<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+        let mut nodes = self
+            .nodes
+            .iter()
+            .filter(|entry| entry.value().exclusions & tags == ExclusionTags::default())
+            .collect::<Vec<_>>();
+
+        nodes.sort_unstable_by(|left, right| {
+            f64_total_ordering(left.score(item), right.score(item))
+        });
+
+        nodes.truncate(n);
+        nodes
+    }
 }
 
 impl<ExclusionTags, Metadata> BitNodeSelection<ExclusionTags, Metadata>
@@ -468,6 +629,31 @@ where
             .par_iter()
             .filter(|node| node.exclusions & tags == ExclusionTags::default())
             .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
+    }
+
+    /// Finds `n` nodes that is responsible for the provided item, filtering out
+    /// nodes that refuse to accept the provided tags. This lookup is performed
+    /// in parallel. Requires the `rayon` feature.
+    #[must_use]
+    #[cfg(feature = "rayon")]
+    pub fn par_get_n(
+        &self,
+        item: &[u8],
+        n: usize,
+        tags: ExclusionTags,
+    ) -> Vec<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+        let mut nodes = self
+            .nodes
+            .par_iter()
+            .filter(|node| node.exclusions & tags == ExclusionTags::default())
+            .collect::<Vec<_>>();
+
+        nodes.par_sort_unstable_by(|left, right| {
+            f64_total_ordering(left.score(item), right.score(item))
+        });
+
+        nodes.truncate(n);
+        nodes
     }
 }
 
