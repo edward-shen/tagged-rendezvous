@@ -657,6 +657,8 @@ where
     }
 }
 
+/// Generate a node and node selection implementation based on the provided
+/// bounds.
 macro_rules! impl_node_selection {
     // this $bounds meme is a hack to get around the fact that we can't
     // represent trait bounds in macros.
@@ -951,6 +953,7 @@ impl_node_selection!(NodeSelection, Node);
 
 impl_node_selection!(BitNodeSelection, BitNode: BitAnd);
 
+/// Generates a node implementation based on the provided node and its bounds.
 macro_rules! impl_node {
     // this $bounds meme is a hack to get around the fact that we can't
     // represent trait bounds in macros.
