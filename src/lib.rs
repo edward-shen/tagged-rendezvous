@@ -1031,7 +1031,7 @@ macro_rules! impl_node {
 
             /// Fetches the associated data with the node.
             #[inline]
-            pub fn data(&self) -> &Metadata {
+            pub const fn data(&self) -> &Metadata {
                 &self.metadata
             }
         }
