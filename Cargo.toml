@@ -14,7 +14,7 @@ include = ["src"]
 rayon = ["rayon_crate", "dashmap/rayon"]
 
 [dependencies]
-dashmap = "4"
+dashmap = "5"
 murmur3 = "0.5"
 rand = "0.8"
 rayon_crate = { package = "rayon", version = "1", optional = true }
