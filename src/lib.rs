@@ -311,7 +311,7 @@ where
                         .unwrap_or_default()
                 })
             })
-            .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
+            .max_by(|left, right| left.score(item).total_cmp(&right.score(item)))
     }
 
     /// Returns the top `n` nodes that are responsible for the provided item
@@ -383,9 +383,7 @@ where
             })
             .collect::<Vec<_>>();
 
-        nodes.sort_unstable_by(|left, right| {
-            f64_total_ordering(left.score(item), right.score(item))
-        });
+        nodes.sort_unstable_by(|left, right| left.score(item).total_cmp(&right.score(item)));
 
         nodes.truncate(n);
         nodes
@@ -416,7 +414,7 @@ where
                         .unwrap_or_default()
                 })
             })
-            .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
+            .max_by(|left, right| left.score(item).total_cmp(&right.score(item)))
     }
 
     /// Finds `n` nodes that is responsible for the provided item, filtering out
@@ -442,9 +440,7 @@ where
             })
             .collect::<Vec<_>>();
 
-        nodes.par_sort_unstable_by(|left, right| {
-            f64_total_ordering(left.score(item), right.score(item))
-        });
+        nodes.par_sort_unstable_by(|left, right| left.score(item).total_cmp(&right.score(item)));
 
         nodes.truncate(n);
         nodes
@@ -556,7 +552,7 @@ where
         self.nodes
             .iter()
             .filter(|entry| entry.value().exclusions & tags == ExclusionTags::default())
-            .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
+            .max_by(|left, right| left.score(item).total_cmp(&right.score(item)))
     }
 
     /// Returns the top `n` nodes that are responsible for the provided item
@@ -602,9 +598,7 @@ where
             .filter(|entry| entry.value().exclusions & tags == ExclusionTags::default())
             .collect::<Vec<_>>();
 
-        nodes.sort_unstable_by(|left, right| {
-            f64_total_ordering(left.score(item), right.score(item))
-        });
+        nodes.sort_unstable_by(|left, right| left.score(item).total_cmp(&right.score(item)));
 
         nodes.truncate(n);
         nodes
@@ -628,7 +622,7 @@ where
         self.nodes
             .par_iter()
             .filter(|node| node.exclusions & tags == ExclusionTags::default())
-            .max_by(|left, right| f64_total_ordering(left.score(item), right.score(item)))
+            .max_by(|left, right| left.score(item).total_cmp(&right.score(item)))
     }
 
     /// Finds `n` nodes that is responsible for the provided item, filtering out
@@ -648,9 +642,7 @@ where
             .filter(|node| node.exclusions & tags == ExclusionTags::default())
             .collect::<Vec<_>>();
 
-        nodes.par_sort_unstable_by(|left, right| {
-            f64_total_ordering(left.score(item), right.score(item))
-        });
+        nodes.par_sort_unstable_by(|left, right| left.score(item).total_cmp(&right.score(item)));
 
         nodes.truncate(n);
         nodes
@@ -1392,19 +1384,6 @@ mod hash64 {
             0.9999999999999999
         );
     }
-}
-
-/// wait for [`f64::total_cmp`] to be stabilized. Until then, use the actual
-/// implementation. See the [GitHub issue] for more information.
-///
-/// [Github issue]:  https://github.com/rust-lang/rust/issues/72599
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
-fn f64_total_ordering(left: f64, right: f64) -> Ordering {
-    let mut left = left.to_bits() as i64;
-    let mut right = right.to_bits() as i64;
-    left ^= (((left >> 63) as u64) >> 1) as i64;
-    right ^= (((right >> 63) as u64) >> 1) as i64;
-    left.cmp(&right)
 }
 
 #[cfg(test)]
