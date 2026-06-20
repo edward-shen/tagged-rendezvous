@@ -4,7 +4,7 @@ description = "Rendezvous hashing with support for tag-based exclusions"
 version = "0.1.1"
 authors = ["Edward Shen <code@eddie.sh>"]
 license = "MIT OR Apache-2.0"
-edition = "2018"
+edition = "2024"
 repository = "https://github.com/edward-shen/tagged-rendezvous"
 keywords = ["tagged", "rendezvous", "node", "selection", "balancer"]
 categories = ["concurrency", "data-structures"]
@@ -22,3 +22,6 @@ rayon_crate = { package = "rayon", version = "1", optional = true }
 [profile.release]
 lto = true
 codegen-units = 1
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

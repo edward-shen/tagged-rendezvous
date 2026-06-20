@@ -264,7 +264,7 @@ where
     /// possible, especially in single threaded contexts.
     #[inline]
     #[must_use]
-    pub fn get(&self, item: &[u8]) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+    pub fn get(&self, item: &[u8]) -> Option<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
         self.get_internal(item, None)
     }
 
@@ -282,7 +282,7 @@ where
         &self,
         item: &[u8],
         tags: &DashSet<ExclusionTags>,
-    ) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+    ) -> Option<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
         self.get_internal(item, Some(tags))
     }
 
@@ -301,7 +301,7 @@ where
         &self,
         item: &[u8],
         tags: Option<&DashSet<ExclusionTags>>,
-    ) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+    ) -> Option<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
         self.nodes
             .iter()
             .filter(|entry| {
@@ -331,7 +331,7 @@ where
         &self,
         item: &[u8],
         n: usize,
-    ) -> Vec<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+    ) -> Vec<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
         self.get_n_internal(item, n, None)
     }
 
@@ -350,7 +350,7 @@ where
         item: &[u8],
         n: usize,
         tags: &DashSet<ExclusionTags>,
-    ) -> Vec<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+    ) -> Vec<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
         self.get_n_internal(item, n, Some(tags))
     }
 
@@ -370,7 +370,7 @@ where
         item: &[u8],
         n: usize,
         tags: Option<&DashSet<ExclusionTags>>,
-    ) -> Vec<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+    ) -> Vec<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
         let mut nodes = self
             .nodes
             .iter()
@@ -404,7 +404,7 @@ where
         &self,
         item: &[u8],
         tags: Option<&DashSet<ExclusionTags>>,
-    ) -> Option<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+    ) -> Option<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
         self.nodes
             .par_iter()
             .filter(|node| {
@@ -427,7 +427,7 @@ where
         item: &[u8],
         n: usize,
         tags: Option<&DashSet<ExclusionTags>>,
-    ) -> Vec<RefMulti<NodeId, Node<ExclusionTags, Metadata>>> {
+    ) -> Vec<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
         let mut nodes = self
             .nodes
             .par_iter()
@@ -530,7 +530,10 @@ where
     /// possible, especially in single threaded contexts.
     #[inline]
     #[must_use]
-    pub fn get(&self, item: &[u8]) -> Option<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+    pub fn get(
+        &self,
+        item: &[u8],
+    ) -> Option<RefMulti<'_, NodeId, BitNode<ExclusionTags, Metadata>>> {
         self.get_with_exclusions(item, ExclusionTags::default())
     }
 
@@ -548,7 +551,7 @@ where
         &self,
         item: &[u8],
         tags: ExclusionTags,
-    ) -> Option<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+    ) -> Option<RefMulti<'_, NodeId, BitNode<ExclusionTags, Metadata>>> {
         self.nodes
             .iter()
             .filter(|entry| entry.value().exclusions & tags == ExclusionTags::default())
@@ -572,7 +575,7 @@ where
         &self,
         item: &[u8],
         n: usize,
-    ) -> Vec<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+    ) -> Vec<RefMulti<'_, NodeId, BitNode<ExclusionTags, Metadata>>> {
         self.get_n_with_exclusions(item, n, ExclusionTags::default())
     }
 
@@ -591,7 +594,7 @@ where
         item: &[u8],
         n: usize,
         tags: ExclusionTags,
-    ) -> Vec<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+    ) -> Vec<RefMulti<'_, NodeId, BitNode<ExclusionTags, Metadata>>> {
         let mut nodes = self
             .nodes
             .iter()
@@ -618,7 +621,7 @@ where
         &self,
         item: &[u8],
         tags: ExclusionTags,
-    ) -> Option<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+    ) -> Option<RefMulti<'_, NodeId, BitNode<ExclusionTags, Metadata>>> {
         self.nodes
             .par_iter()
             .filter(|node| node.exclusions & tags == ExclusionTags::default())
@@ -635,7 +638,7 @@ where
         item: &[u8],
         n: usize,
         tags: ExclusionTags,
-    ) -> Vec<RefMulti<NodeId, BitNode<ExclusionTags, Metadata>>> {
+    ) -> Vec<RefMulti<'_, NodeId, BitNode<ExclusionTags, Metadata>>> {
         let mut nodes = self
             .nodes
             .par_iter()
@@ -798,7 +801,7 @@ macro_rules! impl_node_selection {
             pub fn get_mut(
                 &self,
                 id: NodeId,
-            ) -> Option<RefMut<NodeId, $node<ExclusionTags, Metadata>>> {
+            ) -> Option<RefMut<'_, NodeId, $node<ExclusionTags, Metadata>>> {
                 self.nodes.get_mut(&id)
             }
 
@@ -992,7 +995,7 @@ macro_rules! impl_node {
             ) -> Self {
                 Self {
                     weight,
-                    seed: rng.gen(),
+                    seed: rng.r#gen(),
                     exclusions,
                     metadata,
                 }
