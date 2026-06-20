@@ -243,7 +243,7 @@ pub use error::*;
 ///
 /// [paper]: https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.414.9353
 #[derive(Clone, Debug)]
-pub struct NodeSelection<ExclusionTags: Hash + Eq, Metadata> {
+pub struct NodeSelection<ExclusionTags: Hash + Eq, Metadata = ()> {
     /// The list of nodes to select from.
     nodes: DashMap<NodeId, Node<ExclusionTags, Metadata>>,
 }
@@ -305,10 +305,11 @@ where
         self.nodes
             .iter()
             .filter(|entry| {
-                !entry.value().exclusions.iter().any(|exclusions| {
-                    tags.as_ref()
-                        .is_some_and(|set| set.contains(&exclusions))
-                })
+                !entry
+                    .value()
+                    .exclusions
+                    .iter()
+                    .any(|exclusions| tags.as_ref().is_some_and(|set| set.contains(&exclusions)))
             })
             .max_by(|left, right| left.score(item).total_cmp(&right.score(item)))
     }
@@ -370,16 +371,15 @@ where
         n: usize,
         tags: Option<&DashSet<ExclusionTags>>,
     ) -> Vec<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
-        let mut nodes = self
-            .nodes
-            .iter()
-            .filter(|entry| {
-                !entry.value().exclusions.iter().any(|exclusions| {
-                    tags.as_ref()
-                        .is_some_and(|set| set.contains(&exclusions))
+        let mut nodes =
+            self.nodes
+                .iter()
+                .filter(|entry| {
+                    !entry.value().exclusions.iter().any(|exclusions| {
+                        tags.as_ref().is_some_and(|set| set.contains(&exclusions))
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
 
         nodes.sort_unstable_by(|left, right| left.score(item).total_cmp(&right.score(item)));
 
@@ -406,10 +406,10 @@ where
         self.nodes
             .par_iter()
             .filter(|node| {
-                !node.exclusions.par_iter().any(|exclusions| {
-                    tags.as_ref()
-                        .is_some_and(|set| set.contains(&exclusions))
-                })
+                !node
+                    .exclusions
+                    .par_iter()
+                    .any(|exclusions| tags.as_ref().is_some_and(|set| set.contains(&exclusions)))
             })
             .max_by(|left, right| left.score(item).total_cmp(&right.score(item)))
     }
@@ -425,16 +425,15 @@ where
         n: usize,
         tags: Option<&DashSet<ExclusionTags>>,
     ) -> Vec<RefMulti<'_, NodeId, Node<ExclusionTags, Metadata>>> {
-        let mut nodes = self
-            .nodes
-            .par_iter()
-            .filter(|entry| {
-                !entry.value().exclusions.iter().any(|exclusions| {
-                    tags.as_ref()
-                        .is_some_and(|set| set.contains(&exclusions))
+        let mut nodes =
+            self.nodes
+                .par_iter()
+                .filter(|entry| {
+                    !entry.value().exclusions.iter().any(|exclusions| {
+                        tags.as_ref().is_some_and(|set| set.contains(&exclusions))
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
 
         nodes.par_sort_unstable_by(|left, right| left.score(item).total_cmp(&right.score(item)));
 
@@ -505,7 +504,7 @@ where
 ///
 /// [`bitflags` crate]: https://docs.rs/bitflags/
 #[derive(Clone, Debug)]
-pub struct BitNodeSelection<ExclusionTags: Hash + Eq + BitAnd, Metadata> {
+pub struct BitNodeSelection<ExclusionTags: Hash + Eq + BitAnd, Metadata = ()> {
     /// The list of nodes to select from.
     nodes: DashMap<NodeId, BitNode<ExclusionTags, Metadata>>,
 }
@@ -1194,7 +1193,7 @@ macro_rules! impl_node {
 /// # }
 /// ```
 #[derive(Clone, Debug)]
-pub struct Node<ExclusionTags: Hash + Eq, Metadata> {
+pub struct Node<ExclusionTags: Hash + Eq, Metadata = ()> {
     /// The weight of a node. This is a relative value, and is used to determine
     /// how much traffic a node receives.
     weight: NonZeroUsize,
@@ -1259,7 +1258,7 @@ impl_node!(Node, DashSet<ExclusionTags>);
 ///
 /// [`bitflags` crate]: https://docs.rs/bitflags/
 #[derive(Clone, Debug)]
-pub struct BitNode<ExclusionTags: Hash + Eq + BitAnd, Metadata> {
+pub struct BitNode<ExclusionTags: Hash + Eq + BitAnd, Metadata = ()> {
     /// The weight of a node. This is a relative value, and is used to determine
     /// how much traffic a node receives.
     weight: NonZeroUsize,
