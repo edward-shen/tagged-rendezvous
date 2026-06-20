@@ -307,8 +307,7 @@ where
             .filter(|entry| {
                 !entry.value().exclusions.iter().any(|exclusions| {
                     tags.as_ref()
-                        .map(|set| set.contains(&exclusions))
-                        .unwrap_or_default()
+                        .is_some_and(|set| set.contains(&exclusions))
                 })
             })
             .max_by(|left, right| left.score(item).total_cmp(&right.score(item)))
@@ -377,8 +376,7 @@ where
             .filter(|entry| {
                 !entry.value().exclusions.iter().any(|exclusions| {
                     tags.as_ref()
-                        .map(|set| set.contains(&exclusions))
-                        .unwrap_or_default()
+                        .is_some_and(|set| set.contains(&exclusions))
                 })
             })
             .collect::<Vec<_>>();
@@ -410,8 +408,7 @@ where
             .filter(|node| {
                 !node.exclusions.par_iter().any(|exclusions| {
                     tags.as_ref()
-                        .map(|set| set.contains(&exclusions))
-                        .unwrap_or_default()
+                        .is_some_and(|set| set.contains(&exclusions))
                 })
             })
             .max_by(|left, right| left.score(item).total_cmp(&right.score(item)))
@@ -434,8 +431,7 @@ where
             .filter(|entry| {
                 !entry.value().exclusions.iter().any(|exclusions| {
                     tags.as_ref()
-                        .map(|set| set.contains(&exclusions))
-                        .unwrap_or_default()
+                        .is_some_and(|set| set.contains(&exclusions))
                 })
             })
             .collect::<Vec<_>>();
@@ -1020,7 +1016,7 @@ macro_rules! impl_node {
 
             /// Sets the weight of the node.
             #[inline]
-            pub fn set_weight(&mut self, weight: NonZeroUsize) {
+            pub const fn set_weight(&mut self, weight: NonZeroUsize) {
                 self.weight = weight;
             }
 
