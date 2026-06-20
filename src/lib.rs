@@ -995,7 +995,7 @@ macro_rules! impl_node {
             ) -> Self {
                 Self {
                     weight,
-                    seed: rng.r#gen(),
+                    seed: rng.next_u32(),
                     exclusions,
                     metadata,
                 }
